@@ -228,7 +228,7 @@ void drawGearIcon(bool highlight) {
   // Texte engrenage centre
   canvas.setTextColor(col, bg);
   canvas.setTextSize(1);
-  canvas.drawCentreString("CFG",GEAR_X,GEAR_Y-3,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("CFG", GEAR_X, GEAR_Y-3);
 }
 
 // Retourne le nombre total de slots navigables (sys + user)
@@ -242,9 +242,9 @@ void drawAction(const char *label,const char *state,uint16_t color) {
     canvas.drawCircle(120,108,84,rc); }
   canvas.setTextColor(TFT_WHITE,color);
   canvas.setTextSize(2);
-  canvas.drawCentreString(label,120,86,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString(label, 120, 86);
   canvas.setTextSize(3);
-  canvas.drawCentreString(state,120,120,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString(state, 120, 120);
   canvas.pushSprite(0,0);
   actionClearAt=millis()+3000;
 }
@@ -258,36 +258,36 @@ void drawConfigMode() {
 
   canvas.setTextColor(DYAL_ORANGE,DYAL_BLUE);
   canvas.setTextSize(1);
-  canvas.drawCentreString("MODE CONFIG",120,30,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("MODE CONFIG", 120, 30);
 
   canvas.drawLine(30,42,210,42,DYAL_ORANGE);
 
   canvas.setTextColor(TFT_WHITE,DYAL_BLUE);
   canvas.setTextSize(1);
-  canvas.drawCentreString("SSID:",120,55,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("SSID:", 120, 55);
   canvas.setTextColor(DYAL_ORANGE,DYAL_BLUE);
   canvas.setTextSize(2);
-  canvas.drawCentreString(CONFIG_AP_SSID,120,68,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString(CONFIG_AP_SSID, 120, 68);
 
   canvas.setTextColor(TFT_WHITE,DYAL_BLUE);
   canvas.setTextSize(1);
-  canvas.drawCentreString("CLE WPA2:",120,92,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("CLE WPA2:", 120, 92);
   canvas.setTextColor(DYAL_ORANGE,DYAL_BLUE);
   canvas.setTextSize(1);
-  canvas.drawCentreString(CONFIG_AP_PASS,120,104,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString(CONFIG_AP_PASS, 120, 104);
 
   canvas.drawLine(30,118,210,118,0x2104);
 
   canvas.setTextColor(TFT_WHITE,DYAL_BLUE);
   canvas.setTextSize(1);
-  canvas.drawCentreString("IP:",120,130,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("IP:", 120, 130);
   canvas.setTextColor(DYAL_ORANGE,DYAL_BLUE);
   canvas.setTextSize(2);
-  canvas.drawCentreString(CONFIG_AP_IP,120,143,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString(CONFIG_AP_IP, 120, 143);
 
   canvas.setTextColor(0x4208,DYAL_BLUE);
   canvas.setTextSize(1);
-  canvas.drawCentreString("Tapez CFG pour quitter",120,175,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("Tapez CFG pour quitter", 120, 175);
 
   canvas.pushSprite(0,0);
 }
@@ -915,9 +915,9 @@ void setupRoutes() {
     canvas.fillCircle(120,120,90,C_RED);
     canvas.setTextColor(TFT_WHITE,C_RED);
     canvas.setTextSize(2);
-    canvas.drawCentreString("TESLA",120,100,1);
+    canvas.setTextDatum(MC_DATUM); canvas.drawString("TESLA", 120, 100);
     canvas.setTextSize(1);
-    canvas.drawCentreString("Connexion...",120,130,1);
+    canvas.setTextDatum(MC_DATUM); canvas.drawString("Connexion...", 120, 130);
     canvas.pushSprite(0,0);
     bool ok=netBegin();
     teslaConnected=ok;
@@ -996,7 +996,7 @@ void loop() {
         canvas.fillScreen(TFT_BLACK);
         canvas.setTextColor(TFT_WHITE,TFT_BLACK);
         canvas.setTextSize(2);
-        canvas.drawCentreString("SETUP",120,20,1);
+        canvas.setTextDatum(MC_DATUM); canvas.drawString("SETUP", 120, 20);
         canvas.fillRoundRect(30,112,180,10,5,0x2104);
         if(w>0) canvas.fillRoundRect(30,112,w,10,5,TFT_WHITE);
         canvas.pushSprite(0,0);
@@ -1035,10 +1035,10 @@ void drawIdle() {
   if(nSlots==0) {
     canvas.setTextColor(0x4208,TFT_BLACK);
     canvas.setTextSize(2);
-    canvas.drawCentreString("Aucun slot",120,95,1);
+    canvas.setTextDatum(MC_DATUM); canvas.drawString("Aucun slot", 120, 95);
     canvas.setTextSize(1);
     canvas.setTextColor(0x3084,TFT_BLACK);
-    canvas.drawCentreString("Appui long = menu",120,130,1);
+    canvas.setTextDatum(MC_DATUM); canvas.drawString("Appui long = menu", 120, 130);
     canvas.drawCircle(120,108,90,RING_COL);
   } else {
     int idx = activeSlotIndex(curSlot);
@@ -1052,20 +1052,20 @@ void drawIdle() {
         canvas.drawCircle(120,108,85,RING_COL);
         canvas.setTextColor(TFT_WHITE,bg);
         canvas.setTextSize(3);
-        canvas.drawCentreString(a->icon,120,82,1);
+        canvas.setTextDatum(MC_DATUM); canvas.drawString(a->icon, 120, 82);
         canvas.setTextSize(2);
-        canvas.drawCentreString(a->label,120,128,1);
+        canvas.setTextDatum(MC_DATUM); canvas.drawString(a->label, 120, 128);
         if(s.hasSec && a->labelSec[0]) {
           canvas.setTextColor(0x8410,TFT_BLACK);
           canvas.setTextSize(1);
           String sec2="2x: "; sec2+=a->labelSec;
-          canvas.drawCentreString(sec2.c_str(),120,218,1);
+          canvas.setTextDatum(MC_DATUM); canvas.drawString(sec2.c_str(), 120, 218);
         }
       }
     } else {
       canvas.setTextColor(0x4208,TFT_BLACK);
       canvas.setTextSize(2);
-      canvas.drawCentreString("Aucun slot",120,95,1);
+      canvas.setTextDatum(MC_DATUM); canvas.drawString("Aucun slot", 120, 95);
     }
     drawDots(curSlot, nSlots);
   }
@@ -1075,7 +1075,7 @@ void drawIdle() {
     char buf[12]; snprintf(buf,sizeof(buf),"%d/%d",curSlot+1,nSlots);
     canvas.setTextColor(0x2104,TFT_BLACK);
     canvas.setTextSize(1);
-    canvas.drawCentreString(buf,120,16,1);
+    canvas.setTextDatum(MC_DATUM); canvas.drawString(buf, 120, 16);
   }
 
   canvas.pushSprite(0,0);
@@ -1092,13 +1092,13 @@ void drawLongMenu(uint8_t sel) {
   canvas.drawCircle(120,108,92,DYAL_ORANGE);
   canvas.setTextColor(DYAL_ORANGE,0x0C0E);
   canvas.setTextSize(1);
-  canvas.drawCentreString("MENU",120,38,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("MENU", 120, 38);
   canvas.setTextColor(colors[sel],0x0C0E);
   canvas.setTextSize(2);
-  canvas.drawCentreString(labels[sel],120,100,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString(labels[sel], 120, 100);
   canvas.setTextColor(0x3084,TFT_BLACK);
   canvas.setTextSize(1);
-  canvas.drawCentreString("< tourner   clic = ok >",120,145,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("< tourner   clic = ok >", 120, 145);
   // 6 points
   for(int i=0;i<MENU_COUNT;i++)
     canvas.fillCircle(90+i*10,165,3,(i==sel)?DYAL_ORANGE:0x2104);
@@ -1112,7 +1112,7 @@ void drawSetupScreen() {
   canvas.drawCircle(120,108,90,DYAL_ORANGE);
   canvas.setTextColor(TFT_WHITE,DYAL_BLUE);
   canvas.setTextSize(2);
-  canvas.drawCentreString("SETUP",120,76,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("SETUP", 120, 76);
   canvas.setTextSize(1);
 }
 
@@ -1128,7 +1128,7 @@ void waitClick() {
 void activateSetup() {
   drawSetupScreen();
   canvas.setTextColor(DYAL_ORANGE,DYAL_BLUE);
-  canvas.drawCentreString("WiFi...",120,108,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("WiFi...", 120, 108);
   canvas.pushSprite(0,0);
 
   // En mode SETUP : se connecter au WiFi maison
@@ -1149,13 +1149,13 @@ void activateSetup() {
       server.begin();
       drawSetupScreen();
       canvas.setTextColor(C_GREEN,DYAL_BLUE);
-      canvas.drawCentreString("WiFi OK",120,88,1);
+      canvas.setTextDatum(MC_DATUM); canvas.drawString("WiFi OK", 120, 88);
       canvas.setTextSize(2);
-      canvas.drawCentreString(WiFi.localIP().toString().c_str(),120,108,1);
+      canvas.setTextDatum(MC_DATUM); canvas.drawString(WiFi.localIP().toString().c_str(), 120, 108);
       canvas.setTextColor(0x4208,DYAL_BLUE);
       canvas.setTextSize(1);
-      canvas.drawCentreString("/config dans navigateur",120,132,1);
-      canvas.drawCentreString("clic = quitter",120,150,1);
+      canvas.setTextDatum(MC_DATUM); canvas.drawString("/config dans navigateur", 120, 132);
+      canvas.setTextDatum(MC_DATUM); canvas.drawString("clic = quitter", 120, 150);
       canvas.pushSprite(0,0);
       buzz(40); delay(80); buzz(40);
       waitClick();
@@ -1171,14 +1171,14 @@ void activateSetup() {
   server.begin();
   drawSetupScreen();
   canvas.setTextColor(DYAL_ORANGE,DYAL_BLUE);
-  canvas.drawCentreString("AP: DYAL3_setup",120,88,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("AP: DYAL3_setup", 120, 88);
   canvas.setTextColor(TFT_WHITE,DYAL_BLUE);
   canvas.setTextSize(2);
-  canvas.drawCentreString("192.168.4.1",120,108,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("192.168.4.1", 120, 108);
   canvas.setTextColor(0x4208,DYAL_BLUE);
   canvas.setTextSize(1);
-  canvas.drawCentreString("cle: tesladyal3",120,132,1);
-  canvas.drawCentreString("clic = quitter",120,150,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("cle: tesladyal3", 120, 132);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("clic = quitter", 120, 150);
   canvas.pushSprite(0,0);
   waitClick();
   drawIdle();
@@ -1191,7 +1191,7 @@ void drawBrightScreen() {
   canvas.drawCircle(120,108,107,DYAL_ORANGE);
   canvas.setTextColor(TFT_WHITE,0x4010);
   canvas.setTextSize(2);
-  canvas.drawCentreString("BRIGHT",120,52,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("BRIGHT", 120, 52);
   // Barre de luminosité
   canvas.fillRoundRect(30,88,180,14,7,0x2104);
   int bw=(int)(180L*brightness/255);
@@ -1200,10 +1200,10 @@ void drawBrightScreen() {
   char bb[8]; snprintf(bb,sizeof(bb),"%d%%",(int)(brightness*100/255));
   canvas.setTextColor(TFT_WHITE,0x4010);
   canvas.setTextSize(1);
-  canvas.drawCentreString(bb,120,112,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString(bb, 120, 112);
   canvas.setTextColor(0xC618,0x4010);
-  canvas.drawCentreString("tourner = regler",120,130,1);
-  canvas.drawCentreString("clic = sauvegarder",120,144,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("tourner = regler", 120, 130);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("clic = sauvegarder", 120, 144);
   canvas.pushSprite(0,0);
 }
 
@@ -1255,13 +1255,13 @@ void viewCanBus(char bus) {
   canvas.setTextColor(C_TEAL,TFT_BLACK);
   canvas.setTextSize(2);
   char title[8]; snprintf(title,sizeof(title),"CAN-%c",bus);
-  canvas.drawCentreString(title,120,12,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString(title, 120, 12);
   canvas.setTextColor(TFT_WHITE,TFT_BLACK);
   canvas.setTextSize(2);
-  canvas.drawCentreString("NO STREAM",120,108,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("NO STREAM", 120, 108);
   canvas.setTextColor(0x3084,TFT_BLACK);
   canvas.setTextSize(1);
-  canvas.drawCentreString("clic = quitter",120,228,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("clic = quitter", 120, 228);
   canvas.drawCircle(120,108,118,RING_COL);
   canvas.pushSprite(0,0);
 
@@ -1287,15 +1287,15 @@ void viewCanBus(char bus) {
       canvas.fillScreen(TFT_BLACK);
       canvas.setTextColor(C_TEAL,TFT_BLACK);
       canvas.setTextSize(2);
-      canvas.drawCentreString(title,120,12,1);
+      canvas.setTextDatum(MC_DATUM); canvas.drawString(title, 120, 12);
       canvas.setTextColor(0x3084,TFT_BLACK);
       canvas.setTextSize(1);
-      canvas.drawCentreString("clic = quitter",120,228,1);
+      canvas.setTextDatum(MC_DATUM); canvas.drawString("clic = quitter", 120, 228);
       canvas.drawCircle(120,108,118,RING_COL);
       if(lineCount==0) {
         canvas.setTextColor(TFT_WHITE,TFT_BLACK);
         canvas.setTextSize(2);
-        canvas.drawCentreString("NO STREAM",120,108,1);
+        canvas.setTextDatum(MC_DATUM); canvas.drawString("NO STREAM", 120, 108);
       } else {
         int y=36;
         for(int i=0;i<lineCount&&i<CAN_LINES;i++){
@@ -1303,7 +1303,9 @@ void viewCanBus(char bus) {
           uint16_t col=(millis()-lines[idx].ts<800)?TFT_WHITE:0x4208;
           canvas.setTextColor(col,TFT_BLACK);
           canvas.setTextSize(1);
+          canvas.setTextDatum(TL_DATUM);
           canvas.drawString(lines[idx].txt,6,y);
+          canvas.setTextDatum(MC_DATUM);
           y+=20;
         }
       }
@@ -1380,7 +1382,7 @@ void handleLongPress() {
     canvas.fillCircle(120,108,88,C_RED);
     canvas.setTextColor(TFT_WHITE,C_RED);
     canvas.setTextSize(2);
-    canvas.drawCentreString("REBOOT",120,100,1);
+    canvas.setTextDatum(MC_DATUM); canvas.drawString("REBOOT", 120, 100);
     canvas.pushSprite(0,0);
     buzz(60); delay(300);
     ESP.restart();
@@ -1572,10 +1574,10 @@ void setup() {
   canvas.drawCircle(120,120,107,DYAL_ORANGE);
   canvas.setTextColor(TFT_WHITE,DYAL_BLUE);
   canvas.setTextSize(3);
-  canvas.drawCentreString("DYAL3",120,88,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("DYAL3", 120, 88);
   canvas.setTextColor(DYAL_ORANGE,DYAL_BLUE);
   canvas.setTextSize(1);
-  canvas.drawCentreString("CAN CONTROLLER " FW_VERSION,120,125,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("CAN CONTROLLER " FW_VERSION, 120, 125);
   canvas.pushSprite(0,0);
   buzz(60); delay(120); buzz(60);
   delay(1000);
@@ -1586,10 +1588,10 @@ void setup() {
   canvas.drawCircle(120,108,90,DYAL_ORANGE);
   canvas.setTextColor(TFT_WHITE,C_RED);
   canvas.setTextSize(2);
-  canvas.drawCentreString("MAJOR",120,80,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("MAJOR", 120, 80);
   canvas.setTextSize(1);
   canvas.setTextColor(0xFD20,C_RED);
-  canvas.drawCentreString("connexion...",120,112,1);
+  canvas.setTextDatum(MC_DATUM); canvas.drawString("connexion...", 120, 112);
   canvas.pushSprite(0,0);
 
   majorOk = netBegin();
