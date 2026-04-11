@@ -30,6 +30,7 @@
 #include <Update.h>
 #include <M5GFX.h>
 #include <Wire.h>
+#include <HTTPClient.h>
 #include "secrets.h"
 #include "dyal3_network.h"  // Surcouche réseau ESP32-C3
 
@@ -146,6 +147,9 @@ String      savedSSID, savedPASS;
 bool        wifiConnected = false;
 uint32_t    actionClearAt = 0;
 uint8_t     brightness    = 128;  // 0-255, persisté NVS
+bool        tapDouble     = false; // false=simple, true=double
+uint8_t     tapMode       = 0;     // 0=simple 1=double 2=aucun
+#define DOUBLE_TAP_MS 400
 bool        teslaConnected = false; // connexion ESP32-C3 réussie
 bool        brightMode     = false;  // true = mode réglage luminosité actif
 bool        majorOk        = false;  // connexion Major (ESP32-C3) active
@@ -158,6 +162,16 @@ enum UiMode { UI_HOME, UI_MENU, UI_CAN_A, UI_CAN_B };
 volatile UiMode uiMode = UI_HOME;
 // Fenêtre de garde : ignore tout clic pendant N ms après sortie d'un sous-mode
 volatile uint32_t suppressUntil = 0;
+
+// Forward declarations
+void resetEncoderSync();
+void drawIdle();
+void drawAction(const char*, const char*, uint16_t);
+void execAction(const char *id, bool secondary);
+void handleLongPress();
+void drawBrightScreen();
+void viewCanBus(char bus);
+void resetEncoderSync();
 
 // Reset complet de l'état clic — appeler après chaque transition UI
 void uiResetClickState() {
@@ -173,15 +187,13 @@ void uiResetClickState() {
 void loadSlots(); void saveSlots(); void countSlots();
 int  activeSlotIndex(int n);
 const Action* findAction(const char *id);
-void execAction(const char *id, bool secondary);
 void canPulse(const uint8_t *active);
-void drawIdle(); void drawAction(const char*, const char*, uint16_t);
 void drawConfigMode(); void drawGearIcon(bool highlight);
 void buzzClick(); void buzzBeep(); void buzz(int ms);
 void handleEncoder(); void handleButton(); void checkTouch();
-void startAP(); void startConfigAP(); void startSTA();
+void startAP(); void startSTA();
 void setupRoutes();
-String pageDashboard(); String pageConfig(); String pageOTA();
+String pageDashboard(); String pageConfig(); String pageSlots(); String pageOTA();
 
 // ═══════════════════════════════════════════════════════════════
 //  CAN TESLA
@@ -197,8 +209,7 @@ void writeField(uint8_t *d,int s,int l,int v){
   for(int i=0;i<l;i++){if((v>>i)&1){int b=s+i;if(b<64)d[b/8]|=(1<<(b%8));}}
 }
 void setBit(uint8_t *d,int b){ if(b<64) d[b/8]|=(1<<(b%8)); }
-// canSend() supprimé – remplacé par netCanSendA() / netCanSend()
-// Le M5 n'est plus directement sur le bus CAN.
+
 void canPulse(const uint8_t *active){
   netCanSendA(TESLA_ID,active,8); delay(PULSE_MS); netCanSendA(TESLA_ID,BASE_FRAME,8);
 }
@@ -246,10 +257,6 @@ void drawGearIcon(bool highlight) {
   canvas.setTextSize(1);
   canvas.setTextDatum(MC_DATUM); canvas.drawString("CFG", GEAR_X, GEAR_Y-3);
 }
-
-// Retourne le nombre total de slots navigables (sys + user)
-// sys: REBOOT(-1), SETUP(-2), BRIGHT(-3) = 3 fixes
-// user: nSlots
 
 void drawAction(const char *label,const char *state,uint16_t color) {
   canvas.fillScreen(TFT_BLACK);
@@ -346,6 +353,8 @@ void loadSlots(){
     } else { slots[i].actionId[0]='\0'; slots[i].hasSec=false; slots[i].color=0; }
   }
   brightness=prefs.getUChar("bright",128);
+  tapMode=prefs.getUChar("tapmode",0);
+  tapDouble=(tapMode==1);
   prefs.end(); countSlots();
 }
 void saveSlots(){
@@ -368,46 +377,71 @@ void saveBrightness(){
   prefs.end();
   display.setBrightness(brightness);
 }
+void saveTapMode(){
+  prefs.begin("slots",false);
+  prefs.putBool("tapd",tapDouble);
+  prefs.end();
+}
 
 // ═══════════════════════════════════════════════════════════════
 //  TOUCH SCREEN (FT3267 I2C)
 // ═══════════════════════════════════════════════════════════════
 
-// Lecture coordonnees touch via I2C brut
-bool readTouch(int &tx, int &ty) {
-  Wire.beginTransmission(TOUCH_ADDR);
-  Wire.write(0x02); // registre nb de points
-  if(Wire.endTransmission(false)!=0) return false;
-  Wire.requestFrom(TOUCH_ADDR,1);
-  if(!Wire.available()) return false;
-  uint8_t npts=Wire.read()&0x0F;
-  if(npts==0) return false;
-
-  Wire.beginTransmission(TOUCH_ADDR);
-  Wire.write(0x03);
-  if(Wire.endTransmission(false)!=0) return false;
-  Wire.requestFrom(TOUCH_ADDR,6);
-  if(Wire.available()<6) return false;
-  uint8_t b[6];
-  for(int i=0;i<6;i++) b[i]=Wire.read();
-  tx=((b[0]&0x0F)<<8)|b[1];
-  ty=((b[2]&0x0F)<<8)|b[3];
-  return true;
-}
-
+// Touch via M5GFX natif — double tap pour déclencher
 void checkTouch() {
-  int tx,ty;
-  if(!readTouch(tx,ty)) { lastTouchGear=false; return; }
+  static uint32_t lastTapAt  = 0;
+  static bool     waitSecond = false;
 
-  // Zone roue dentee ?
-  int dx=tx-GEAR_X, dy=ty-GEAR_Y;
-  bool onGear=(dx*dx+dy*dy)<=(GEAR_R+8)*(GEAR_R+8);
+  lgfx::touch_point_t tp;
+  int n = display.getTouch(&tp, 1);
 
-  if(onGear && !lastTouchGear) {
-    lastTouchGear=true;
-    toggleConfigMode();
-  } else if(!onGear) {
-    lastTouchGear=false;
+  if(n == 0) {
+    lastTouchGear = false;
+    return;
+  }
+
+  // Ignorer si tactile désactivé, sous-menu actif ou fenêtre de garde
+  if(tapMode==2 || uiMode != UI_HOME || millis() < suppressUntil) {
+    lastTouchGear = false;
+    waitSecond = false;
+    return;
+  }
+
+  // Anti-rebond : ne compter qu'un tap par contact
+  if(lastTouchGear) return;
+  lastTouchGear = true;
+
+  uint32_t now = millis();
+
+  auto fireAction = [](){
+    if(nSlots > 0) {
+      int idx = activeSlotIndex(curSlot);
+      if(idx >= 0 && slots[idx].actionId[0]) {
+        majorOk = netIsConnected();
+        buzzBeep();
+        execAction(slots[idx].actionId, false);
+      }
+    }
+  };
+
+  if(!tapDouble) {
+    // Mode simple tap : déclencher immédiatement
+    waitSecond = false;
+    fireAction();
+  } else {
+    // Mode double tap
+    if(!waitSecond) {
+      waitSecond = true;
+      lastTapAt  = now;
+    } else {
+      if(now - lastTapAt <= DOUBLE_TAP_MS) {
+        waitSecond = false;
+        buzzBeep(); delay(60); buzzBeep();
+        fireAction();
+      } else {
+        lastTapAt = now;  // trop lent, recommencer
+      }
+    }
   }
 }
 
@@ -527,31 +561,122 @@ String logoHTML() {
            "<span class='l-b'>L</span><span class='l-o'>3</span></h1>");
 }
 
-// ── Page config (accessible en mode CONFIG AP ou STA connecté) 
+// ── Page principale (/config) ────────────────────────────────
 String pageConfig() {
   String h;
-  h.reserve(4000);
+  h.reserve(5000);
   h += F("<!DOCTYPE html><html><head><meta charset='UTF-8'>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-    "<title>DYÁL3 – Configuration</title>");
+    "<title>DYÁL3</title>");
   h += commonCSS();
-  h += F("</head><body>");
+  h += F("<style>"
+    ".major-ok{background:#22c55e;color:#000;padding:.5rem .8rem;border-radius:6px;"
+    "font-weight:bold;font-size:.75rem;margin-bottom:.8rem;text-align:center;}"
+    ".major-ko{background:#e80000;color:#000;padding:.5rem .8rem;border-radius:6px;"
+    "font-weight:bold;font-size:.75rem;margin-bottom:.8rem;text-align:center;}"
+    ".row{display:flex;gap:.5rem;margin-bottom:.5rem;}"
+    ".row .btn{flex:1;}"
+    "</style></head><body>");
   h += logoHTML();
   h += F("<div class='sub'>CONFIGURATION</div><main>");
 
-  // ── Section WiFi client ──────────────────────────────────────
-  h += F("<div class='card'>"
-    "<h2>&#127968; WiFi Maison (mode client)</h2>"
-    "<button class='btn btn-b btn-sm' onclick='scan()'>&#128269; Scanner les réseaux</button>"
-    "<div class='nets' id='nets'></div>"
-    "<label>SSID</label>"
-    "<input id='ssid' type='text' placeholder='Nom du réseau WiFi'>"
-    "<label>Mot de passe WPA2</label>"
-    "<input id='pass' type='password' placeholder='Laisser vide si ouvert'>"
-    "<button class='btn' onclick='saveWifi()'>&#128190; Sauvegarder et connecter</button>"
+  // Statut Major
+  h += majorOk
+    ? F("<div class='major-ok'>&#10010; MAJOR CONNECTÉ</div>")
+    : F("<div class='major-ko'>&#10006; MAJOR NON CONNECTÉ</div>");
+
+  // Luminosité
+  h += F("<div class='card'><h2>&#9728; Luminosité</h2>"
+    "<input type='range' id='bri' min='0' max='255' step='5'"
+    " style='width:100%;accent-color:#D4620A;margin-bottom:.4rem'>"
+    "<div style='text-align:center;font-size:.7rem;color:#D4620A'><span id='bri-v'></span></div>"
+    "<br><button class='btn' onclick='saveBri()'>&#128190; Appliquer</button>"
     "</div>");
 
-  // ── Section slots ────────────────────────────────────────────
+  // Écran tactile : aucun / simple / double
+  h += F("<div class='card'><h2>&#128397; Écran tactile</h2>"
+    "<div style='display:flex;gap:1.2rem;align-items:center;margin-bottom:.8rem'>"
+    "<label style='display:flex;align-items:center;gap:.4rem;cursor:pointer'>"
+    "<input type='radio' name='tap' value='2' style='width:auto'> Aucun</label>"
+    "<label style='display:flex;align-items:center;gap:.4rem;cursor:pointer'>"
+    "<input type='radio' name='tap' value='0' style='width:auto'> Simple</label>"
+    "<label style='display:flex;align-items:center;gap:.4rem;cursor:pointer'>"
+    "<input type='radio' name='tap' value='1' style='width:auto'> Double</label>"
+    "</div>"
+    "<button class='btn' onclick='saveTap()'>&#128190; Appliquer</button>"
+    "</div>");
+
+  // Actions rapides
+  String aj="[";
+  for(int i=0;i<N_ACTIONS;i++){
+    if(i) aj+=",";
+    aj+="{\"id\":\""; aj+=ALL_ACTIONS[i].id;
+    aj+="\",\"label\":\""; aj+=ALL_ACTIONS[i].label;
+    aj+="\",\"icon\":\""; aj+=ALL_ACTIONS[i].icon; aj+="\"}";
+  }
+  aj+="]";
+  h += F("<div class='card'><h2>&#9889; Actions rapides</h2>"
+    "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:.4rem' id='qg'></div>"
+    "</div>");
+
+  // Système
+  h += F("<div class='card'><h2>&#9874; Système</h2>"
+    "<div class='row'>"
+    "<button class='btn btn-b' onclick='teslaConnect()'>&#128246; Reconnexion Major</button>"
+    "</div>"
+    "<div class='row'>"
+    "<button class='btn' onclick='location.href=\"/slots\"'>&#9881; Config actions molette</button>"
+    "</div>"
+    "<div class='row'>"
+    "<button class='btn btn-sm' onclick='location.href=\"/update\"'>&#128260; OTA</button>"
+    "<button class='btn btn-sm' style='background:#c0392b'"
+    " onclick='if(confirm(\"Reboot ?\"))fetch(\"/reboot\").then(()=>toast(\"Reboot...\"))'>&#9940; Reboot</button>"
+    "</div>"
+    "<div id='tesla-status' style='font-size:.62rem;color:#3a3e4a;margin-top:.5rem'></div>"
+    "</div>");
+
+  h += F("</main><footer>DYÁL3 " FW_VERSION "</footer>"
+    "<div id='toast'></div><script>"
+    "const A=");
+  h += aj;
+  h += F(";const BRI=");
+  h += String(brightness);
+  h += F(";const TAPD=");
+  h += String(tapMode);  // 0=simple 1=double 2=aucun
+  h += F(";"
+    "const bs=document.getElementById('bri');if(bs){"
+    "bs.value=BRI;"
+    "document.getElementById('bri-v').textContent=Math.round(BRI*100/255)+'%';"
+    "bs.oninput=()=>document.getElementById('bri-v').textContent=Math.round(bs.value*100/255)+'%';}"
+    "document.querySelector('input[name=tap][value='+TAPD+']').checked=true;"
+    "function saveTap(){"
+    "const v=document.querySelector('input[name=tap]:checked').value;"
+    "fetch('/tapmode?v='+v).then(()=>toast(['Simple tap','Double tap','Écran désactivé'][+v]));}"
+    "function saveBri(){"
+    "fetch('/brightness?v='+document.getElementById('bri').value)"
+    ".then(()=>toast('Luminosité OK'));}"
+    "function teslaConnect(){"
+    "const st=document.getElementById('tesla-status');st.textContent='Connexion...';"
+    "fetch('/tesla-connect').then(r=>r.json()).then(d=>{"
+    "st.textContent=d.ok?'✓ '+d.ip:'✗ Echec';"
+    "st.style.color=d.ok?'#22c55e':'#e80000';toast(d.ok?'Major OK':'Echec',!d.ok);});}"
+    "document.getElementById('qg').innerHTML=A.map(a=>"
+    "`<div style='background:#070809;border:1px solid #1e2028;border-radius:6px;"
+    "padding:.5rem;cursor:pointer;text-align:center'"
+    " onclick='fetch(\"/action?cmd=\"+a.id+\"&sec=0\").then(()=>toast(a.label))'>"
+    "<div style='font-size:1.1rem'>${a.icon}</div>"
+    "<div style='font-size:.58rem;margin-top:.2rem'>${a.label}</div></div>`).join('');"
+    "let tt;function toast(m,e=false){"
+    "const el=document.getElementById('toast');el.textContent=m;"
+    "el.style.borderColor=e?'#c0392b':'#D4620A';"
+    "el.classList.add('on');clearTimeout(tt);tt=setTimeout(()=>el.classList.remove('on'),2800);}"
+    "</script></body></html>");
+  return h;
+}
+
+
+// ── Page configuration des actions (/slots) ───────────────────
+String pageSlots() {
   // JSON actions
   String aj="[";
   for(int i=0;i<N_ACTIONS;i++){
@@ -562,162 +687,104 @@ String pageConfig() {
     aj+="\",\"sec\":\""; aj+=ALL_ACTIONS[i].labelSec; aj+="\"}";
   }
   aj+="]";
+  // JSON slots
   String sj="[";
   for(int i=0;i<MAX_SLOTS;i++){
     if(i) sj+=",";
-    sj+="{\"pos\":"; sj+=i;
-    sj+=",\"id\":\""; sj+=slots[i].actionId; sj+="\""; // ferme id
-    sj+=",\"hs\":"; sj+=(slots[i].hasSec?"true":"false");
-    // Convertir RGB565 → #RRGGBB pour le color picker
-    uint16_t rgb565=slots[i].color;
-    uint8_t r5=(rgb565>>11)&0x1F, g6=(rgb565>>5)&0x3F, b5=rgb565&0x1F;
-    uint8_t r8=(r5<<3)|(r5>>2), g8=(g6<<2)|(g6>>4), b8=(b5<<3)|(b5>>2);
+    uint16_t rgb=slots[i].color;
+    uint8_t r5=(rgb>>11)&0x1F,g6=(rgb>>5)&0x3F,b5=rgb&0x1F;
+    uint8_t r8=(r5<<3)|(r5>>2),g8=(g6<<2)|(g6>>4),b8=(b5<<3)|(b5>>2);
     char cb[8]; snprintf(cb,sizeof(cb),"#%02X%02X%02X",r8,g8,b8);
-    if(!slots[i].color) strcpy(cb,"#000000");
+    if(!slots[i].color) strcpy(cb,"#1A4D7B");
+    sj+="{\"pos\":"; sj+=i;
+    sj+=",\"id\":\""; sj+=slots[i].actionId; sj+="\"";
+    sj+=",\"hs\":"; sj+=(slots[i].hasSec?"true":"false");
     sj+=",\"col\":\""; sj+=cb; sj+="\"}";
   }
   sj+="]";
 
-  h += F("<div class='card'>"
-    "<h2>&#9881; Actions de la molette</h2>"
-    "<p style='font-size:.58rem;color:#3a3e4a;margin-bottom:.7rem'>"
-    "Glissez une action sur un slot. 2x = double-clic.</p>"
-    "<div style='display:flex;flex-wrap:wrap;gap:.35rem;margin-bottom:.8rem' id='pal'></div>"
+  String h;
+  h.reserve(7000);
+  h += F("<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>DYÁL3 – Actions</title>");
+  h += commonCSS();
+  h += F("<style>"
+    ".pal-item{display:flex;align-items:center;gap:.3rem;background:#070809;"
+    "border:1px solid #1e2028;border-radius:4px;padding:.35rem .55rem;"
+    "cursor:grab;font-size:.7rem;user-select:none;}"
+    ".slot{background:#070809;border:2px dashed #1a1c24;border-radius:6px;"
+    "padding:.5rem;min-height:64px;position:relative;}"
+    ".slot-num{font-size:.5rem;color:#252830;margin-bottom:.2rem;}"
+    ".slot-inner{font-size:.7rem;}"
+    ".slot-empty{font-size:.6rem;color:#252830;}"
+    ".clr-btn{position:absolute;top:.3rem;right:.3rem;background:none;"
+    "border:none;color:#555;cursor:pointer;font-size:.8rem;}"
+    ".color-row{display:flex;align-items:center;gap:.5rem;margin-top:.3rem;font-size:.58rem;color:#3a3e4a;}"
+    "</style></head><body>");
+  h += logoHTML();
+  h += F("<div class='sub'>ACTIONS MOLETTE</div><main>"
+    "<p style='font-size:.6rem;color:#3a3e4a;text-align:center;margin-bottom:.5rem'>"
+    "Glisser une action sur un slot &bull; Choisir la couleur</p>"
+    "<div style='display:flex;flex-wrap:wrap;gap:.3rem;margin-bottom:.8rem' id='pal'></div>"
     "<div style='display:grid;grid-template-columns:repeat(2,1fr);gap:.4rem' id='slg'></div>"
-    "<br><button class='btn' onclick='saveSlots()'>&#128190; Sauvegarder les slots</button>"
-    "</div>");
-
-  h += F("<div class='card'>"
-    "<h2>&#9889; Actions rapides</h2>"
-    "<div style='display:grid;grid-template-columns:repeat(2,1fr);gap:.4rem' id='qg'></div>"
-    "</div>");
-
-  h += F("<div class='card'>"
-    "<h2>&#9728; Luminosite</h2>"
-    "<input type='range' id='bri' min='0' max='255' step='5' style='width:100%;accent-color:#D4620A;margin-bottom:.5rem'>"
-    "<div style='display:flex;justify-content:space-between;font-size:.6rem;color:#444'>"
-    "<span>Min</span><span id='bri-v'></span><span>Max</span></div>"
-    "<br><button class='btn' onclick='saveBri()'>&#128190; Appliquer</button>"
-    "</div>");
-
-  h += F("<div class='card'>");
-  h += F("<h2>&#9874; Systeme</h2>");
-  h += majorOk
-    ? F("<div style='margin-bottom:.7rem;background:#22c55e;color:#000;padding:.4rem .7rem;border-radius:5px;font-size:.72rem;font-weight:bold'>&#10010; MAJOR CONNECT&Eacute;</div>")
-    : F("<div style='margin-bottom:.7rem;background:#e80000;color:#000;padding:.4rem .7rem;border-radius:5px;font-size:.72rem;font-weight:bold'>&#10006; MAJOR NON CONNECT&Eacute;</div>");
-  h += F("<button class='btn btn-b btn-sm' onclick='teslaConnect()'>&#128246; Reconnexion Major</button>&nbsp;"
-    "<button class='btn btn-sm' onclick='location.href=\"/update\"'>""&#128260; OTA</button>&nbsp;"
-    "<button class='btn btn-sm' style='background:#c0392b'"" onclick='if(confirm(\"Reboot M5 ?\"))fetch(\"/reboot\").then(()=>toast(\"Reboot...\")')'>""&#9940; Reboot</button>"
-    "<div id='tesla-status' style='font-size:.62rem;color:#3a3e4a;margin-top:.6rem'></div>"
-    "</div>");
-
-  h += F("</main><footer>DYÁL3 " FW_VERSION " &bull; Config &bull; <a href='/' style='color:#333'>Dashboard</a></footer>"
+    "<br><button class='btn' onclick='save()'>&#128190; Sauvegarder</button>"
+    "<br><br><button class='btn btn-b' onclick='location.href=\"/config\"'>&#8592; Retour</button>"
+    "</main><footer>DYÁL3 " FW_VERSION "</footer>"
     "<div id='toast'></div><script>"
     "const A=");
   h += aj;
   h += F(";const S=");
   h += sj;
-  h += F(";const BRI=");
-  h += String(brightness);
   h += F(";"
     "let cfg=S.map(s=>({pos:s.pos,id:s.id,hs:s.hs,col:s.col}));let drag='';"
-    // ── Scan WiFi
-    "function scan(){"
-    "const n=document.getElementById('nets');"
-    "n.innerHTML='<div style=\"padding:.5rem;color:#555\">Scan...</div>';"
-    "fetch('/wifi-scan').then(r=>r.json()).then(list=>{"
-    "list.sort((a,b)=>b.rssi-a.rssi);"
-    "n.innerHTML=list.map(x=>"
-    "`<div class='net' onclick='pick(\"${x.ssid}\")'>`"
-    "+`<span>${x.ssid}</span><span style='color:#444'>${x.rssi}dBm</span></div>`"
-    ").join('');});}"
-    "function pick(s){document.getElementById('ssid').value=s;}"
-    // ── Save WiFi
-    "function saveWifi(){"
-    "const s=document.getElementById('ssid').value.trim();"
-    "const p=document.getElementById('pass').value;"
-    "if(!s){toast('SSID vide',true);return;}"
-    "const f=new FormData();f.append('ssid',s);f.append('pass',p);"
-    "fetch('/wifi-connect',{method:'POST',body:f}).then(()=>"
-    "toast('WiFi sauvegardé – reconnexion en cours...')).catch(()=>toast('Erreur',true));}"
-    // ── Palette
+    // Palette
     "function rPal(){"
     "const p=document.getElementById('pal');"
     "p.innerHTML=A.map(a=>"
-    "`<div style='display:flex;align-items:center;gap:.3rem;background:#070809;"
-    "border:1px solid #1e2028;border-radius:4px;padding:.35rem .55rem;"
-    "cursor:grab;font-size:.7rem;user-select:none' draggable='true' data-id='${a.id}'>"
-    "${a.icon} ${a.label}</div>`).join('');"
+    "`<div class='pal-item' draggable='true' data-id='${a.id}'>${a.icon} ${a.label}</div>`"
+    ").join('');"
     "p.querySelectorAll('[data-id]').forEach(el=>{"
     "el.ondragstart=ev=>{drag=el.dataset.id;ev.dataTransfer.effectAllowed='move';};});}"
-    // ── Slots
+    // Slots
     "function rSlots(){"
     "const g=document.getElementById('slg');"
     "g.innerHTML=cfg.map(s=>{"
     "const a=A.find(x=>x.id===s.id);"
-    "let inner=a"
-    "?`<div style='display:flex;align-items:center;gap:.3rem'>`"
-    "+`<span>${a.icon}</span><div>`"
-    "+`<div style='font-size:.72rem'>${a.label}</div>`"
-    "+(a.sec?`<div style='font-size:.57rem;color:#444'>2x: ${a.sec}</div>`:'')"
+    "const inner=a"
+    "?`<div class='slot-inner'>${a.icon} ${a.label}`"
+    "+(a.sec?`<label style='display:block;font-size:.57rem;margin-top:.2rem'>`"
+    "+`<input type='checkbox' style='width:auto' ${s.hs?'checked':''}> 2x: ${a.sec}</label>`:'')"
+    "+`<div class='color-row'>Fond: <input type='color' value='${s.col}'"
+    " onchange='cfg[${s.pos}].col=this.value' style='width:28px;height:20px;padding:0;border:none;cursor:pointer'>`"
     "+`</div></div>`"
-    "+(a.sec?`<label style='display:flex;align-items:center;gap:.3rem;font-size:.57rem;margin-top:.25rem'>`"
-    "+`<input type='checkbox' style='width:auto;margin:0' ${s.hs?'checked':''}> Activer 2x</label>`:'')"
-    "+`<div style='display:flex;align-items:center;gap:.3rem;margin-top:.3rem'>`"
-    "+`<span style='font-size:.55rem;color:#3a3e4a'>Couleur:</span>`"
-    "+`<input type='color' value='${s.col&&s.col!=='#000000'?s.col:'#1A4D7B'}`"
-    "+` style='width:30px;height:20px;padding:0;border:1px solid #1e2028;background:none;cursor:pointer'`"
-    "+` onchange='cfg[${s.pos}].col=this.value'></div>`"
-    "+`<button onclick='clr(${s.pos})' style='position:absolute;top:.3rem;right:.3rem;"
-    "background:none;border:none;color:#333;cursor:pointer'>x</button>`"
-    ":'<div style=\"font-size:.6rem;color:#252830\">-- vide --</div>';"
-    "return `<div style='background:#070809;border:2px dashed #1a1c24;border-radius:6px;"
-    "padding:.5rem;min-height:60px;position:relative' id='sl${s.pos}' data-pos='${s.pos}'>`"
-    "+`<div style='font-size:.5rem;color:#252830;margin-bottom:.2rem'>Pos ${s.pos+1}</div>`"
-    "+inner+'</div>';}).join('');"
+    ":`<div class='slot-empty'>— vide —</div>`;"
+    "return `<div class='slot' id='sl${s.pos}' data-pos='${s.pos}'>`"
+    "+`<div class='slot-num'>Slot ${s.pos+1}</div>`"
+    "+inner"
+    "+(a?`<button class='clr-btn' onclick='clr(${s.pos})'>&#10005;</button>`:'')+"
+    "'</div>';}).join('');"
     "cfg.forEach(s=>{"
     "const el=document.getElementById('sl'+s.pos);"
+    "if(!el)return;"
     "el.ondragover=ev=>ev.preventDefault();"
     "el.ondrop=ev=>{ev.preventDefault();cfg[s.pos].id=drag;cfg[s.pos].hs=false;rSlots();};"
     "const cb=el.querySelector('input[type=checkbox]');"
-    "if(cb) cb.onchange=ev=>cfg[s.pos].hs=ev.target.checked;});}"
-    // ── Quick
-    "function rQ(){"
-    "document.getElementById('qg').innerHTML=A.map(a=>"
-    "`<div style='background:#070809;border:1px solid #1e2028;border-radius:6px;"
-    "padding:.55rem;cursor:pointer;text-align:center' onclick='qa(\"${a.id}\")'>`"
-    "+`<div style='font-size:1.1rem'>${a.icon}</div>`"
-    "+`<div style='font-size:.62rem'>${a.label}</div></div>`).join('');}"
+    "if(cb)cb.onchange=ev=>cfg[s.pos].hs=ev.target.checked;});}"
     "function clr(p){cfg[p].id='';cfg[p].hs=false;rSlots();}"
-    "function saveSlots(){"
+    "function save(){"
     "fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},"
     "body:JSON.stringify({slots:cfg.map(s=>({pos:s.pos,actionId:s.id,hasSec:s.hs,color:s.col}))})})"
-    ".then(()=>toast('Slots sauvegardés !')).catch(()=>toast('Erreur',true));}"
-    "function qa(id){fetch('/action?cmd='+id+'&sec=0').then(()=>toast('OK: '+id));}"
+    ".then(()=>toast('Sauvegardé !')).catch(()=>toast('Erreur',true));}"
     "let tt;function toast(m,e=false){"
     "const el=document.getElementById('toast');el.textContent=m;"
     "el.style.borderColor=e?'#c0392b':'#D4620A';"
-    "el.classList.add('on');clearTimeout(tt);tt=setTimeout(()=>el.classList.remove('on'),2500);}"
-    "// Init brightness slider\n"
-    "const bslider=document.getElementById('bri');if(bslider){"
-    "bslider.value=BRI;"
-    "document.getElementById('bri-v').textContent=Math.round(BRI*100/255)+'%';"
-    "bslider.oninput=()=>document.getElementById('bri-v').textContent=Math.round(bslider.value*100/255)+'%';""}"
-    "function saveBri(){"
-    "const v=document.getElementById('bri').value;"
-    "fetch('/brightness?v='+v).then(()=>toast('Luminosité: '+Math.round(v*100/255)+'%'));}"
-    "function teslaConnect(){"
-    "const s=document.getElementById('tesla-status');"
-    "s.textContent='Connexion en cours...';"
-    "fetch('/tesla-connect').then(r=>r.json()).then(d=>{"
-    "s.textContent=d.ok?'✓ Connecté: '+d.ip:'✗ Echec connexion ESP32-C3';"
-    "s.style.color=d.ok?'#22c55e':'#c0392b';"
-    "toast(d.ok?'Tesla connecté !':'Echec connexion',!d.ok);"
-    "});}"
-    "rPal();rSlots();rQ();"
+    "el.classList.add('on');clearTimeout(tt);tt=setTimeout(()=>el.classList.remove('on'),2800);}"
+    "rPal();rSlots();"
     "</script></body></html>");
   return h;
 }
+
 
 // ── Page Dashboard (mode STA connecté) ───────────────────────
 String pageDashboard() {
@@ -736,9 +803,9 @@ String pageDashboard() {
   h += F("<!DOCTYPE html><html><head><meta charset='UTF-8'>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
     "<title>DYÁL3</title>");
-  h += commonCSS();
+  h += (commonCSS());
   h += F("</head><body>");
-  h += logoHTML();
+  h += (logoHTML());
   h += F("<div class='sub'>DASHBOARD</div><main>"
     "<div class='card'>"
     "<h2>&#9889; Actions rapides</h2>"
@@ -750,11 +817,11 @@ String pageDashboard() {
     "</div>"
     "</main>"
     "<footer>DYÁL3 " FW_VERSION " &bull; ");
-  h += ip;
+  h += (ip);
   h += F(" &bull; <a href='/update' style='color:#333'>OTA</a></footer>"
     "<div id='toast'></div><script>"
     "const A=");
-  h += aj;
+  h += (aj);
   h += F(";"
     "document.getElementById('qg').innerHTML=A.map(a=>"
     "`<div style='background:#070809;border:1px solid #1e2028;border-radius:6px;"
@@ -810,7 +877,9 @@ void handleRoot() {
       majorOk = (hc.GET() == 200);
       hc.end();
     } else { majorOk=false; }
-    server.send(200,"text/html",pageConfig());
+    // CORRECTION : envoyer directement la page
+    String page = pageConfig();
+    server.send(200, "text/html", page);
   } else {
     server.send(200,"text/html",pageDashboard());
   }
@@ -818,17 +887,16 @@ void handleRoot() {
 
 void handleConfigPage() {
   if(!isAllowed()){ server.send(403,"text/plain","Non autorisé"); return; }
-  // Ping Major avant de générer la page (timeout court)
   if(netIsConnected()) {
     HTTPClient hc;
     hc.begin("http://" NET_ESP_IP "/status");
     hc.setTimeout(600);
     majorOk = (hc.GET() == 200);
     hc.end();
-  } else {
-    majorOk = false;
-  }
-  server.send(200,"text/html",pageConfig());
+  } else { majorOk = false; }
+  
+  String page = pageConfig();
+  server.send(200, "text/html", page);
 }
 
 void handleWifiScan() {
@@ -856,13 +924,11 @@ void handleWifiConnect() {
   delay(300);
   if(configMode) {
     // Rester en AP config mais mémoriser pour après
-    toast_serial("WiFi maison sauvegardé: "+s);
+    Serial.println("[DYAL3] WiFi maison sauvegardé: "+s);
   } else {
     stopConfigAP(); // reconnecte en STA
   }
 }
-
-void toast_serial(String msg){ Serial.println("[DYAL3] "+msg); }
 
 void handleAction() {
   if(!isAllowed()){ server.send(403,"text/plain","Non autorisé"); return; }
@@ -946,6 +1012,11 @@ void setupRoutes() {
     }
   });
   // Luminosité
+  server.on("/tapmode", HTTP_GET, [](){
+    String v=server.arg("v");
+    if(v.length()){ tapMode=(uint8_t)constrain(v.toInt(),0,2); tapDouble=(tapMode==1); prefs.begin("slots",false); prefs.putUChar("tapmode",tapMode); prefs.end(); }
+    server.send(200,"application/json",tapDouble?"{\"tapd\":1}":"{\"tapd\":0}");
+  });
   server.on("/brightness", HTTP_GET, [](){
     String v=server.arg("v");
     if(v.length()){
@@ -955,6 +1026,15 @@ void setupRoutes() {
     }
     char r[48]; snprintf(r,sizeof(r),"{\"brightness\":%d}",brightness);
     server.send(200,"application/json",r);
+  });
+  server.on("/slots", HTTP_GET, [](){
+    if(!isAllowed()){ server.send(403,"text/plain","Non autorisé"); return; }
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200,"text/html","");
+    String pg=pageSlots();
+    for(int i=0;i<(int)pg.length();i+=2048)
+      server.sendContent(pg.substring(i,min(i+2048,(int)pg.length())));
+    server.sendContent("");
   });
   server.on("/cfg-on",  HTTP_GET, [](){
     if(!configMode){ configMode=true; startConfigAP(); drawConfigMode(); }
