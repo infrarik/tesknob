@@ -153,6 +153,22 @@ volatile bool longPressFlag  = false; // signalé par tâche bouton
 volatile bool shortPressFlag = false; // clic court
 volatile bool pingRequest    = false; // demande de ping Major
 
+// ─── STATE MACHINE UI ─────────────────────────────────────────
+enum UiMode { UI_HOME, UI_MENU, UI_CAN_A, UI_CAN_B };
+volatile UiMode uiMode = UI_HOME;
+// Fenêtre de garde : ignore tout clic pendant N ms après sortie d'un sous-mode
+volatile uint32_t suppressUntil = 0;
+
+// Reset complet de l'état clic — appeler après chaque transition UI
+void uiResetClickState() {
+  shortPressFlag = false;
+  longPressFlag  = false;
+  waitDblClick   = false;
+  lastClickAt    = 0;
+  btnPressedAt   = 0;
+  suppressUntil  = millis() + 350;
+}
+
 // ── Prototypes ────────────────────────────────────────────────
 void loadSlots(); void saveSlots(); void countSlots();
 int  activeSlotIndex(int n);
@@ -989,9 +1005,12 @@ void loop() {
     handleEncoder();
     handleButton();
     // Feedback barre progression appui long (sans bloquer)
+    static bool barVisible = false;
     if(digitalRead(ENC_BTN)==LOW && !longPressFlag) {
       uint32_t held=millis()-btnPressedAt;
       if(held>400 && held<2000) {
+        suppressUntil = millis() + 400;
+        barVisible = true;
         int w=(int)(180L*held/2000);
         canvas.fillScreen(TFT_BLACK);
         canvas.setTextColor(TFT_WHITE,TFT_BLACK);
@@ -1001,6 +1020,11 @@ void loop() {
         if(w>0) canvas.fillRoundRect(30,112,w,10,5,TFT_WHITE);
         canvas.pushSprite(0,0);
       }
+    } else if(barVisible && digitalRead(ENC_BTN)==HIGH && !longPressFlag) {
+      // Relâché avant 2s : revenir à l'action sans l'activer
+      barVisible = false;
+      resetEncoderSync();
+      drawIdle();
     }
   }
   checkTouch();
@@ -1082,11 +1106,11 @@ void drawIdle() {
 }
 
 // ─── MENU APPUI LONG ─────────────────────────────────────────
-// 0=BRIGHT 1=SETUP 2=CAN-A 3=CAN-B 4=REBOOT 5=EXIT
-#define MENU_COUNT 6
+// 0=BRIGHT 1=CAN-A 2=CAN-B 3=REBOOT 4=EXIT
+#define MENU_COUNT 5
 void drawLongMenu(uint8_t sel) {
-  const char* labels[] = {"BRIGHT","SETUP","CAN-A","CAN-B","REBOOT","EXIT"};
-  uint16_t    colors[] = {0xFFE0, DYAL_BLUE, C_TEAL, C_TEAL, C_RED, 0x4208};
+  const char* labels[] = {"BRIGHT","CAN-A","CAN-B","REBOOT","EXIT"};
+  uint16_t    colors[] = {0xFFE0, C_TEAL, C_TEAL, C_RED, 0x4208};
   canvas.fillScreen(TFT_BLACK);
   canvas.fillCircle(120,108,90,0x0C0E);
   canvas.drawCircle(120,108,92,DYAL_ORANGE);
@@ -1207,11 +1231,19 @@ void drawBrightScreen() {
   canvas.pushSprite(0,0);
 }
 
-// Naviguer dans le menu (retourne l'index choisi)
+// Naviguer dans le menu — GPIO direct, state machine propre
 uint8_t runMenu() {
+  uiMode = UI_MENU;
+  // Attendre relâchement physique + reset état clic
+  while(digitalRead(ENC_BTN)==LOW) delay(10);
+  uiResetClickState();
+  // Attendre que la fenêtre de garde soit écoulée
+  while(millis() < suppressUntil) delay(10);
+
   uint8_t sel = 0;
   int lastE = encCount;
   drawLongMenu(sel);
+
   while(true) {
     int enc = encCount;
     if(enc!=lastE) {
@@ -1221,16 +1253,17 @@ uint8_t runMenu() {
       drawLongMenu(sel);
     }
     if(digitalRead(ENC_BTN)==LOW) {
-      delay(30);
+      delay(40);
       if(digitalRead(ENC_BTN)==LOW) {
-        buzzBeep();
         while(digitalRead(ENC_BTN)==LOW) delay(10);
+        uiResetClickState();
+        while(millis() < suppressUntil) delay(10);
+        buzzBeep();
         break;
       }
     }
     delay(20);
   }
-  shortPressFlag=false; longPressFlag=false;
   return sel;
 }
 
@@ -1239,8 +1272,11 @@ uint8_t runMenu() {
 // Affiche les dernières trames reçues depuis le Major via UDP
 // bus : 'A' ou 'B'  — clic = retour au menu
 void viewCanBus(char bus) {
-  // Vider flags et buffer
-  shortPressFlag=false; longPressFlag=false;
+  uiMode = (bus=='A') ? UI_CAN_A : UI_CAN_B;
+  while(digitalRead(ENC_BTN)==LOW) delay(10);
+  uiResetClickState();
+  while(millis() < suppressUntil) delay(10);
+  // Vider buffer CAN
   { CanFrame fr; while(canBufPop(fr)){} }
 
   #define CAN_LINES 8
@@ -1265,7 +1301,17 @@ void viewCanBus(char bus) {
   canvas.drawCircle(120,108,118,RING_COL);
   canvas.pushSprite(0,0);
 
-  while(!shortPressFlag) {
+  while(true) {
+    // Sortie sur clic GPIO direct (pas shortPressFlag)
+    if(digitalRead(ENC_BTN)==LOW) {
+      delay(30);
+      if(digitalRead(ENC_BTN)==LOW) {
+        while(digitalRead(ENC_BTN)==LOW) delay(10);
+        delay(200);
+        shortPressFlag=false; longPressFlag=false;
+        break;
+      }
+    }
     bool newFrame=false;
     CanFrame f;
     while(canBufPop(f)) {
@@ -1313,87 +1359,107 @@ void viewCanBus(char bus) {
     }
     delay(20);
   }
-  shortPressFlag=false; longPressFlag=false;
+  // Sortie propre : reset état clic, fenêtre de garde
+  uiMode = UI_HOME;
+  uiResetClickState();
+  while(millis() < suppressUntil) delay(10);
 }
 
 void handleLongPress() {
   buzz(80);
+  uiMode = UI_MENU;
+  uiResetClickState();
+  while(millis() < suppressUntil) delay(10);
 
-  uint8_t menuSel = runMenu();
+  // ── Boucle principale du menu ─────────────────────────────
+  // On ne quitte cette boucle QUE sur EXIT (menuSel==4)
+  // Toutes les autres actions reviennent ici après exécution
+  while(true) {
+    uint8_t menuSel = runMenu();
 
-  if(menuSel==0) {
-    // ── BRIGHT : vider le clic de validation du menu, puis réglage immédiat
-    shortPressFlag=false; longPressFlag=false;
-    int lastE2=encCount;
-    drawBrightScreen();
-    while(true) {
-      int enc=encCount;
-      if(enc!=lastE2) {
-        int d=enc-lastE2; lastE2=enc;
-        int b=(int)brightness+d*16;
-        if(b<0) b=0; if(b>255) b=255;
-        brightness=(uint8_t)b;
-        display.setBrightness(brightness);
-        buzzClick();
-        drawBrightScreen();
+    if(menuSel==0) {
+      // BRIGHT : réglage molette, clic = sauvegarder + retour menu
+      uiResetClickState();
+      while(millis() < suppressUntil) delay(10);
+      int lastE2=encCount;
+      drawBrightScreen();
+      while(true) {
+        int enc=encCount;
+        if(enc!=lastE2) {
+          int d=enc-lastE2; lastE2=enc;
+          int b=(int)brightness+d*16;
+          if(b<0) b=0; if(b>255) b=255;
+          brightness=(uint8_t)b;
+          display.setBrightness(brightness);
+          buzzClick();
+          drawBrightScreen();
+        }
+        if(shortPressFlag) {
+          shortPressFlag=false; longPressFlag=false;
+          break;
+        }
+        delay(20);
       }
-      if(shortPressFlag) {
-        shortPressFlag=false; longPressFlag=false;
-        break;
-      }
-      delay(20);
+      saveBrightness();
+      uiResetClickState();
+      while(millis() < suppressUntil) delay(10);
+      // Retour au menu (continue la boucle)
+
+    } else if(menuSel==1) {
+      // CAN-A
+      viewCanBus('A');
+      uiMode = UI_MENU;
+      uiResetClickState();
+      while(millis() < suppressUntil) delay(10);
+
+    } else if(menuSel==2) {
+      // CAN-B
+      viewCanBus('B');
+      uiMode = UI_MENU;
+      uiResetClickState();
+      while(millis() < suppressUntil) delay(10);
+
+    } else if(menuSel==3) {
+      // REBOOT
+      canvas.fillScreen(TFT_BLACK);
+      canvas.fillCircle(120,108,88,C_RED);
+      canvas.setTextColor(TFT_WHITE,C_RED);
+      canvas.setTextSize(2);
+      canvas.setTextDatum(MC_DATUM); canvas.drawString("REBOOT", 120, 100);
+      canvas.pushSprite(0,0);
+      buzz(60); delay(300);
+      ESP.restart();
+
+    } else {
+      // EXIT (menuSel==4) : SEUL moyen de sortir du menu
+      break;
     }
-    saveBrightness();
-    // Retour au menu
-    menuSel=runMenu();
-    if(menuSel==1) { activateSetup(); return; }
-    if(menuSel==4) { buzz(60); delay(200); ESP.restart(); }
-    drawIdle();
-
-  } else if(menuSel==1) {
-    activateSetup();
-  } else if(menuSel==2) {
-    // CAN-A
-    viewCanBus('A');
-    // Vider le clic de sortie + anti-rebond
-    shortPressFlag=false; longPressFlag=false;
-    while(digitalRead(ENC_BTN)==LOW) delay(10);
-    delay(150);
-    shortPressFlag=false; longPressFlag=false;
-    menuSel=runMenu();
-    if(menuSel==1){activateSetup();return;}
-    if(menuSel==4){buzz(60);delay(300);ESP.restart();}
-    drawIdle();
-  } else if(menuSel==3) {
-    // CAN-B
-    viewCanBus('B');
-    // Vider le clic de sortie + anti-rebond
-    shortPressFlag=false; longPressFlag=false;
-    while(digitalRead(ENC_BTN)==LOW) delay(10);
-    delay(150);
-    shortPressFlag=false; longPressFlag=false;
-    menuSel=runMenu();
-    if(menuSel==1){activateSetup();return;}
-    if(menuSel==4){buzz(60);delay(300);ESP.restart();}
-    drawIdle();
-  } else if(menuSel==4) {
-    // REBOOT
-    canvas.fillScreen(TFT_BLACK);
-    canvas.fillCircle(120,108,88,C_RED);
-    canvas.setTextColor(TFT_WHITE,C_RED);
-    canvas.setTextSize(2);
-    canvas.setTextDatum(MC_DATUM); canvas.drawString("REBOOT", 120, 100);
-    canvas.pushSprite(0,0);
-    buzz(60); delay(300);
-    ESP.restart();
-  } else {
-    // EXIT
-    drawIdle();
   }
+
+  // Sortie propre vers UI_HOME
+  uiMode = UI_HOME;
+  uiResetClickState();
+  while(millis() < suppressUntil) delay(10);
+  resetEncoderSync();  // absorber rotations accumulées pendant le menu
+  drawIdle();
+}
+
+
+// Force la resynchronisation de lastCnt dans handleEncoder
+// À appeler après toute sortie de menu
+void resetEncoderSync() {
+  // On passe temporairement en UI_MENU le temps d'un appel
+  // pour que handleEncoder fasse lastCnt=encCount sans déclencher d'action
+  UiMode saved = uiMode;
+  uiMode = UI_MENU;
+  handleEncoder();
+  uiMode = saved;
 }
 
 void handleEncoder(){
   static int lastCnt=0;
+  // Pendant menu : resynchroniser lastCnt sans agir
+  if(uiMode != UI_HOME) { lastCnt=encCount; return; }
   if(encCount==lastCnt) return;
   int d=encCount-lastCnt; lastCnt=encCount;
 
@@ -1486,13 +1552,13 @@ static void btnTask(void*) {
       uint32_t held = ms - btnPressedAt;
       if(held >= 2000) {
         longFired = true;
-        longPressFlag = true;  // signaler à loop()
+        longPressFlag = true;  // jamais bloqué par suppressUntil
       }
     }
 
     if(now==HIGH && prev==LOW) {
       uint32_t held = ms - btnPressedAt;
-      if(!longFired && held >= 30)
+      if(!longFired && held >= 30 && millis() > suppressUntil)
         shortPressFlag = true;  // signaler à loop()
     }
 
@@ -1503,6 +1569,13 @@ static void btnTask(void*) {
 
 void handleButton(){
   // Appelé depuis loop() — traite les flags posés par btnTask
+  // Guard : hors UI_HOME, ignorer tout (menus autogèrent)
+  if(uiMode != UI_HOME) {
+    shortPressFlag = false;
+    longPressFlag  = false;
+    return;
+  }
+
 
   // ── Appui long ────────────────────────────────────────────────
   if(longPressFlag) {
@@ -1511,15 +1584,17 @@ void handleButton(){
     // Attendre relâchement
     while(digitalRead(ENC_BTN)==LOW) delay(10);
     handleLongPress();
-    // Vider à nouveau après retour du menu (clic de validation)
-    longPressFlag  = false;
-    shortPressFlag = false;
+    uiMode = UI_HOME;
+    uiResetClickState();
+    while(millis() < suppressUntil) delay(10);
     return;
   }
 
   // ── Clic court ────────────────────────────────────────────────
   if(shortPressFlag) {
     shortPressFlag = false;
+    // Ignorer si appui > 400ms (intention menu avortée)
+    if(millis() < suppressUntil) return;
     if(brightMode) {
       brightMode=false;
       saveBrightness();
