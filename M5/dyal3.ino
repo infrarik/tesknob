@@ -30,6 +30,7 @@
 #include <Update.h>
 #include <M5GFX.h>
 #include <Wire.h>
+#include "secrets.h"
 #include "dyal3_network.h"  // Surcouche réseau ESP32-C3
 
 // ─── COULEURS DYAL3 ──────────────────────────────────────────
@@ -455,7 +456,7 @@ void startAP(){
   WiFi.softAP("DYAL3-Setup","dyal3pwd");
 }
 void startSTA(){
-  WiFi.setHostname("DYAL3-M5");
+  WiFi.setHostname(SECRET_HOSTNAME);
   WiFi.mode(WIFI_STA);
   WiFi.begin(savedSSID.c_str(),savedPASS.c_str());
   uint32_t t=millis();
@@ -1137,7 +1138,7 @@ void activateSetup() {
 
   // Tenter WiFi maison
   if(savedSSID.length()) {
-    WiFi.setHostname("DYAL3-M5");
+    WiFi.setHostname(SECRET_HOSTNAME);
     WiFi.mode(WIFI_STA);
     WiFi.begin(savedSSID.c_str(),savedPASS.c_str());
     uint32_t t=millis();
@@ -1165,7 +1166,7 @@ void activateSetup() {
   // Pas de WiFi → AP DYAL3_setup
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig({192,168,4,1},{192,168,4,1},{255,255,255,0});
-  WiFi.softAP("DYAL3_setup","tesladyal3");
+  WiFi.softAP(SECRET_SETUP_SSID,SECRET_SETUP_PASS);
   setupRoutes();
   server.begin();
   drawSetupScreen();
@@ -1606,7 +1607,7 @@ void setup() {
     IPAddress(192,168,10,1),
     IPAddress(192,168,10,1),
     IPAddress(255,255,255,0));
-  WiFi.softAP("DYAL3-M5","tesladyal3",1,false,2);
+  WiFi.softAP(SECRET_AP_SSID,SECRET_AP_PASS,1,false,2);
   Serial.println("[AP] DYAL3-M5 -> 192.168.10.1");
 
   setupRoutes();

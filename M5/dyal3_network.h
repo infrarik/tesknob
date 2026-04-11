@@ -7,6 +7,7 @@
 // UDP RX : port 20001, format "BUS_A:0x273:C1A0...\n"
 
 #include <WiFi.h>
+#include "secrets.h"
 #include <WiFiUdp.h>
 #include <HTTPClient.h>
 

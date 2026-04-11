@@ -1,0 +1,25 @@
+# ── Secrets (NE JAMAIS COMMITTER) ───────────────────────────
+secrets.h
+
+# ── Arduino build artifacts ──────────────────────────────────
+build/
+*.elf
+*.bin
+*.hex
+*.map
+
+# ── Caches Arduino IDE ───────────────────────────────────────
+.arduino15/
+/tmp/arduino*/
+
+# ── Éditeurs ─────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Logs ─────────────────────────────────────────────────────
+*.log
