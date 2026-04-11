@@ -455,6 +455,7 @@ void startAP(){
   WiFi.softAP("DYAL3-Setup","dyal3pwd");
 }
 void startSTA(){
+  WiFi.setHostname("DYAL3-M5");
   WiFi.mode(WIFI_STA);
   WiFi.begin(savedSSID.c_str(),savedPASS.c_str());
   uint32_t t=millis();
@@ -550,7 +551,12 @@ String pageConfig() {
     sj+="{\"pos\":"; sj+=i;
     sj+=",\"id\":\""; sj+=slots[i].actionId; sj+="\""; // ferme id
     sj+=",\"hs\":"; sj+=(slots[i].hasSec?"true":"false");
-    char cb[8]; snprintf(cb,sizeof(cb),"#%04X",slots[i].color);
+    // Convertir RGB565 → #RRGGBB pour le color picker
+    uint16_t rgb565=slots[i].color;
+    uint8_t r5=(rgb565>>11)&0x1F, g6=(rgb565>>5)&0x3F, b5=rgb565&0x1F;
+    uint8_t r8=(r5<<3)|(r5>>2), g8=(g6<<2)|(g6>>4), b8=(b5<<3)|(b5>>2);
+    char cb[8]; snprintf(cb,sizeof(cb),"#%02X%02X%02X",r8,g8,b8);
+    if(!slots[i].color) strcpy(cb,"#000000");
     sj+=",\"col\":\""; sj+=cb; sj+="\"}";
   }
   sj+="]";
@@ -571,17 +577,20 @@ String pageConfig() {
 
   h += F("<div class='card'>"
     "<h2>&#9728; Luminosite</h2>"
-    "<input type='range' id='bri' min='10' max='255' step='5' style='width:100%;accent-color:#D4620A;margin-bottom:.5rem'>"
+    "<input type='range' id='bri' min='0' max='255' step='5' style='width:100%;accent-color:#D4620A;margin-bottom:.5rem'>"
     "<div style='display:flex;justify-content:space-between;font-size:.6rem;color:#444'>"
     "<span>Min</span><span id='bri-v'></span><span>Max</span></div>"
     "<br><button class='btn' onclick='saveBri()'>&#128190; Appliquer</button>"
     "</div>");
 
-  h += F("<div class='card'>"
-    "<h2>&#9874; Systeme</h2>"
-    "<button class='btn btn-b btn-sm' onclick='teslaConnect()'>&#128246; Connexion Tesla</button>&nbsp;"
-    "<button class='btn btn-sm' onclick='location.href=\"/update\"'>&#128260; OTA</button>&nbsp;"
-    "<button class='btn btn-sm' style='background:#c0392b' onclick='if(confirm(\"Reboot M5 ?\"))fetch(\"/reboot\").then(()=>toast(\"Reboot...\"))'>&#9940; Reboot</button>"
+  h += F("<div class='card'>");
+  h += F("<h2>&#9874; Systeme</h2>");
+  h += majorOk
+    ? F("<div style='margin-bottom:.7rem;background:#22c55e;color:#000;padding:.4rem .7rem;border-radius:5px;font-size:.72rem;font-weight:bold'>&#10010; MAJOR CONNECT&Eacute;</div>")
+    : F("<div style='margin-bottom:.7rem;background:#e80000;color:#000;padding:.4rem .7rem;border-radius:5px;font-size:.72rem;font-weight:bold'>&#10006; MAJOR NON CONNECT&Eacute;</div>");
+  h += F("<button class='btn btn-b btn-sm' onclick='teslaConnect()'>&#128246; Reconnexion Major</button>&nbsp;"
+    "<button class='btn btn-sm' onclick='location.href=\"/update\"'>""&#128260; OTA</button>&nbsp;"
+    "<button class='btn btn-sm' style='background:#c0392b'"" onclick='if(confirm(\"Reboot M5 ?\"))fetch(\"/reboot\").then(()=>toast(\"Reboot...\")')'>""&#9940; Reboot</button>"
     "<div id='tesla-status' style='font-size:.62rem;color:#3a3e4a;margin-top:.6rem'></div>"
     "</div>");
 
@@ -639,7 +648,7 @@ String pageConfig() {
     "+`<input type='checkbox' style='width:auto;margin:0' ${s.hs?'checked':''}> Activer 2x</label>`:'')"
     "+`<div style='display:flex;align-items:center;gap:.3rem;margin-top:.3rem'>`"
     "+`<span style='font-size:.55rem;color:#3a3e4a'>Couleur:</span>`"
-    "+`<input type='color' value='${s.col&&s.col!='#0000'?s.col:'#'+a.id.split('').map(c=>c.charCodeAt(0).toString(16)).join('').substring(0,6).padStart(6,'0')}'`"
+    "+`<input type='color' value='${s.col&&s.col!=='#000000'?s.col:'#1A4D7B'}`"
     "+` style='width:30px;height:20px;padding:0;border:1px solid #1e2028;background:none;cursor:pointer'`"
     "+` onchange='cfg[${s.pos}].col=this.value'></div>`"
     "+`<button onclick='clr(${s.pos})' style='position:absolute;top:.3rem;right:.3rem;"
@@ -766,22 +775,42 @@ String pageOTA() {
 // En mode CONFIG AP : toujours autorisé (c'est l'objectif)
 // En mode STA : autorisé uniquement si connecté
 bool isAllowed() {
-  if(configMode) return true;       // AP config Dyal3 actif
-  if(wifiConnected) return true;    // connecté WiFi maison
-  if(WiFi.getMode()==WIFI_AP) return true;  // AP secours DYAL3-Setup
+  // Toujours autorisé si un AP est actif ou si connecté WiFi maison
+  wifi_mode_t m = WiFi.getMode();
+  if(m == WIFI_AP || m == WIFI_AP_STA) return true;
+  if(wifiConnected) return true;
+  if(configMode) return true;
   return false;
 }
 
 void handleRoot() {
   if(!isAllowed()){ server.send(403,"text/plain","Non autorisé"); return; }
-  if(configMode)
+  if(configMode) {
+    if(netIsConnected()) {
+      HTTPClient hc;
+      hc.begin("http://" NET_ESP_IP "/status");
+      hc.setTimeout(600);
+      majorOk = (hc.GET() == 200);
+      hc.end();
+    } else { majorOk=false; }
     server.send(200,"text/html",pageConfig());
-  else
+  } else {
     server.send(200,"text/html",pageDashboard());
+  }
 }
 
 void handleConfigPage() {
   if(!isAllowed()){ server.send(403,"text/plain","Non autorisé"); return; }
+  // Ping Major avant de générer la page (timeout court)
+  if(netIsConnected()) {
+    HTTPClient hc;
+    hc.begin("http://" NET_ESP_IP "/status");
+    hc.setTimeout(600);
+    majorOk = (hc.GET() == 200);
+    hc.end();
+  } else {
+    majorOk = false;
+  }
   server.send(200,"text/html",pageConfig());
 }
 
@@ -1052,11 +1081,11 @@ void drawIdle() {
 }
 
 // ─── MENU APPUI LONG ─────────────────────────────────────────
-// 0=BRIGHT, 1=SETUP, 2=REBOOT, 3=EXIT
-#define MENU_COUNT 4
+// 0=BRIGHT 1=SETUP 2=CAN-A 3=CAN-B 4=REBOOT 5=EXIT
+#define MENU_COUNT 6
 void drawLongMenu(uint8_t sel) {
-  const char* labels[] = {"BRIGHT","SETUP","REBOOT","EXIT"};
-  uint16_t    colors[] = {0xFFE0, DYAL_BLUE, C_RED, 0x4208};
+  const char* labels[] = {"BRIGHT","SETUP","CAN-A","CAN-B","REBOOT","EXIT"};
+  uint16_t    colors[] = {0xFFE0, DYAL_BLUE, C_TEAL, C_TEAL, C_RED, 0x4208};
   canvas.fillScreen(TFT_BLACK);
   canvas.fillCircle(120,108,90,0x0C0E);
   canvas.drawCircle(120,108,92,DYAL_ORANGE);
@@ -1069,9 +1098,9 @@ void drawLongMenu(uint8_t sel) {
   canvas.setTextColor(0x3084,TFT_BLACK);
   canvas.setTextSize(1);
   canvas.drawCentreString("< tourner   clic = ok >",120,145,1);
-  // 4 points
+  // 6 points
   for(int i=0;i<MENU_COUNT;i++)
-    canvas.fillCircle(102+i*12,165,3,(i==sel)?DYAL_ORANGE:0x2104);
+    canvas.fillCircle(90+i*10,165,3,(i==sel)?DYAL_ORANGE:0x2104);
   canvas.pushSprite(0,0);
 }
 
@@ -1101,11 +1130,14 @@ void activateSetup() {
   canvas.drawCentreString("WiFi...",120,108,1);
   canvas.pushSprite(0,0);
 
-  // Déconnecter Major
-  WiFi.disconnect(true); delay(100);
+  // En mode SETUP : se connecter au WiFi maison
+  // On quitte le Major temporairement
+  WiFi.softAPdisconnect(false);
+  WiFi.disconnect(false); delay(100);
 
   // Tenter WiFi maison
   if(savedSSID.length()) {
+    WiFi.setHostname("DYAL3-M5");
     WiFi.mode(WIFI_STA);
     WiFi.begin(savedSSID.c_str(),savedPASS.c_str());
     uint32_t t=millis();
@@ -1201,6 +1233,86 @@ uint8_t runMenu() {
   return sel;
 }
 
+
+// ── Moniteur CAN temps réel ──────────────────────────────────
+// Affiche les dernières trames reçues depuis le Major via UDP
+// bus : 'A' ou 'B'  — clic = retour au menu
+void viewCanBus(char bus) {
+  // Vider flags et buffer
+  shortPressFlag=false; longPressFlag=false;
+  { CanFrame fr; while(canBufPop(fr)){} }
+
+  #define CAN_LINES 8
+  struct CanLine { char txt[28]; uint32_t ts; bool valid; };
+  CanLine lines[CAN_LINES];
+  memset(lines,0,sizeof(lines));
+  int lineCount=0, lineNext=0;
+  uint32_t lastDraw=0;
+
+  // Afficher immédiatement un premier écran
+  canvas.fillScreen(TFT_BLACK);
+  canvas.setTextColor(C_TEAL,TFT_BLACK);
+  canvas.setTextSize(2);
+  char title[8]; snprintf(title,sizeof(title),"CAN-%c",bus);
+  canvas.drawCentreString(title,120,12,1);
+  canvas.setTextColor(TFT_WHITE,TFT_BLACK);
+  canvas.setTextSize(2);
+  canvas.drawCentreString("NO STREAM",120,108,1);
+  canvas.setTextColor(0x3084,TFT_BLACK);
+  canvas.setTextSize(1);
+  canvas.drawCentreString("clic = quitter",120,228,1);
+  canvas.drawCircle(120,108,118,RING_COL);
+  canvas.pushSprite(0,0);
+
+  while(!shortPressFlag) {
+    bool newFrame=false;
+    CanFrame f;
+    while(canBufPop(f)) {
+      if(f.bus != bus) continue;
+      char hex[17]="";
+      for(int i=0;i<f.dlc&&i<8;i++)
+        snprintf(hex+i*2,sizeof(hex)-i*2,"%02X",f.data[i]);
+      snprintf(lines[lineNext].txt,sizeof(lines[lineNext].txt),
+        "0x%03X [%d] %s",f.id,f.dlc,hex);
+      lines[lineNext].ts=millis();
+      lines[lineNext].valid=true;
+      lineNext=(lineNext+1)%CAN_LINES;
+      if(lineCount<CAN_LINES) lineCount++;
+      newFrame=true;
+    }
+
+    if(newFrame || millis()-lastDraw>200) {
+      lastDraw=millis();
+      canvas.fillScreen(TFT_BLACK);
+      canvas.setTextColor(C_TEAL,TFT_BLACK);
+      canvas.setTextSize(2);
+      canvas.drawCentreString(title,120,12,1);
+      canvas.setTextColor(0x3084,TFT_BLACK);
+      canvas.setTextSize(1);
+      canvas.drawCentreString("clic = quitter",120,228,1);
+      canvas.drawCircle(120,108,118,RING_COL);
+      if(lineCount==0) {
+        canvas.setTextColor(TFT_WHITE,TFT_BLACK);
+        canvas.setTextSize(2);
+        canvas.drawCentreString("NO STREAM",120,108,1);
+      } else {
+        int y=36;
+        for(int i=0;i<lineCount&&i<CAN_LINES;i++){
+          int idx=(lineNext-1-i+CAN_LINES)%CAN_LINES;
+          uint16_t col=(millis()-lines[idx].ts<800)?TFT_WHITE:0x4208;
+          canvas.setTextColor(col,TFT_BLACK);
+          canvas.setTextSize(1);
+          canvas.drawString(lines[idx].txt,6,y);
+          y+=20;
+        }
+      }
+      canvas.pushSprite(0,0);
+    }
+    delay(20);
+  }
+  shortPressFlag=false; longPressFlag=false;
+}
+
 void handleLongPress() {
   buzz(80);
 
@@ -1232,12 +1344,36 @@ void handleLongPress() {
     // Retour au menu
     menuSel=runMenu();
     if(menuSel==1) { activateSetup(); return; }
-    if(menuSel==2) { buzz(60); delay(200); ESP.restart(); }
+    if(menuSel==4) { buzz(60); delay(200); ESP.restart(); }
     drawIdle();
 
   } else if(menuSel==1) {
     activateSetup();
   } else if(menuSel==2) {
+    // CAN-A
+    viewCanBus('A');
+    // Vider le clic de sortie + anti-rebond
+    shortPressFlag=false; longPressFlag=false;
+    while(digitalRead(ENC_BTN)==LOW) delay(10);
+    delay(150);
+    shortPressFlag=false; longPressFlag=false;
+    menuSel=runMenu();
+    if(menuSel==1){activateSetup();return;}
+    if(menuSel==4){buzz(60);delay(300);ESP.restart();}
+    drawIdle();
+  } else if(menuSel==3) {
+    // CAN-B
+    viewCanBus('B');
+    // Vider le clic de sortie + anti-rebond
+    shortPressFlag=false; longPressFlag=false;
+    while(digitalRead(ENC_BTN)==LOW) delay(10);
+    delay(150);
+    shortPressFlag=false; longPressFlag=false;
+    menuSel=runMenu();
+    if(menuSel==1){activateSetup();return;}
+    if(menuSel==4){buzz(60);delay(300);ESP.restart();}
+    drawIdle();
+  } else if(menuSel==4) {
     // REBOOT
     canvas.fillScreen(TFT_BLACK);
     canvas.fillCircle(120,108,88,C_RED);
@@ -1464,9 +1600,14 @@ void setup() {
   savedPASS=prefs.getString("pass","");
   prefs.end();
 
-  // WiFi maison pour accès web (en parallèle, non bloquant)
-  if(savedSSID.length()) startSTA();
-  if(!wifiConnected) startAP();
+  // AP interne pour accès page config (coexiste avec STA Major)
+  // WIFI_AP_STA déjà activé par netBegin()
+  WiFi.softAPConfig(
+    IPAddress(192,168,10,1),
+    IPAddress(192,168,10,1),
+    IPAddress(255,255,255,0));
+  WiFi.softAP("DYAL3-M5","tesladyal3",1,false,2);
+  Serial.println("[AP] DYAL3-M5 -> 192.168.10.1");
 
   setupRoutes();
   server.begin();

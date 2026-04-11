@@ -105,7 +105,11 @@ bool netBegin() {
     xTaskCreatePinnedToCore(netTxWorker,"netTX",4096,nullptr,1,&txTask,0);
   }
 
-  WiFi.mode(WIFI_STA);
+  // Mode AP_STA : connecté au Major (STA) ET AP interne pour config web
+  // L'AP interne (192.168.10.1) est géré par dyal3.ino
+  // Ici on se connecte uniquement au Major en STA
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.setHostname("DYAL3-M5");
   WiFi.begin(NET_SSID, NET_PASS);
   uint32_t t = millis();
   while(WiFi.status()!=WL_CONNECTED && millis()-t<10000) delay(200);
