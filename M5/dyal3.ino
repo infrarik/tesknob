@@ -1,7 +1,11 @@
 /*
  * ============================================================
- *  DYÁL3 – M5Stack DIAL  v2.0
+ *  DYÁL3 – M5Stack DIAL  v2.1
  *  ESP32-S3 + SN65HVD230 (PORT.B)
+ *
+ *  MODIFICATION v2.1 :
+ *  - Utilisation de frames.h pour les trames CAN prédéfinies
+ *  - Trames identiques à tesla_can.py
  *
  *  PINOUT M5DIAL (DYÁL3)
  *  Ecran GC9A01 : MOSI=5 SCLK=6 CS=7 DC=4 RST=8 BL=9
@@ -24,6 +28,9 @@
  */
 
 #include <Arduino.h>
+#ifndef M_PI
+#define M_PI 3.14159265f
+#endif
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Preferences.h>
@@ -33,6 +40,7 @@
 #include <HTTPClient.h>
 #include "secrets.h"
 #include "dyal3_network.h"  // Surcouche réseau ESP32-C3
+#include "frames.h"          // Trames CAN prédéfinies
 
 // ─── COULEURS DYAL3 ──────────────────────────────────────────
 #define DYAL_BLUE    0x1A4D
@@ -76,13 +84,14 @@ bool     waitDblClick   = false;
 bool     battHeatActive = false;
 uint32_t lastHeatMs     = 0;
 
-#define FW_VERSION "v2.0"
+#define FW_VERSION "v2.1"
 
 // ─── MODE CONFIG AP ───────────────────────────────────────────
 #define CONFIG_AP_SSID  "Dyal3"
 #define CONFIG_AP_PASS  "tesladyal3"
 #define CONFIG_AP_IP    "192.168.10.1"
 bool     configMode     = false;   // true = AP config actif
+bool     configApActive = false;   // true = AP DYAL3-M5 ouvert
 
 
 // ─── ICONE ROUE DENTEE ────────────────────────────────────────
@@ -187,7 +196,7 @@ void uiResetClickState() {
 void loadSlots(); void saveSlots(); void countSlots();
 int  activeSlotIndex(int n);
 const Action* findAction(const char *id);
-void canPulse(const uint8_t *active);
+void canPulse(uint32_t id, const uint8_t *data, uint8_t dlc);
 void drawConfigMode(); void drawGearIcon(bool highlight);
 void buzzClick(); void buzzBeep(); void buzz(int ms);
 void handleEncoder(); void handleButton(); void checkTouch();
@@ -196,36 +205,39 @@ void setupRoutes();
 String pageDashboard(); String pageConfig(); String pageSlots(); String pageOTA();
 
 // ═══════════════════════════════════════════════════════════════
-//  CAN TESLA
+//  CAN TESLA avec frames.h (trames prédéfinies)
 // ═══════════════════════════════════════════════════════════════
 
-const uint8_t BASE_FRAME[8] = {0xC1,0xA0,0x00,0x00,0xC8,0x02,0x30,0x02};
 #define TESLA_ID 0x273
 #define PULSE_MS 100
 
-void frameBase(uint8_t *dst) { memcpy(dst, BASE_FRAME, 8); }
-void writeField(uint8_t *d,int s,int l,int v){
-  for(int i=0;i<l;i++){int b=s+i;if(b<64)d[b/8]&=~(1<<(b%8));}
-  for(int i=0;i<l;i++){if((v>>i)&1){int b=s+i;if(b<64)d[b/8]|=(1<<(b%8));}}
+void canPulse(uint32_t id, const uint8_t *data, uint8_t dlc) {
+  // Envoi de la trame active
+  netCanSendA(id, data, dlc);
+  delay(PULSE_MS);
+  
+  // Envoi de la trame de repos
+  if (id == TESLA_ID) {
+    netCanSendA(TESLA_ID, BASE_FRAME_273, 8);
+  } else {
+    uint8_t zero[8] = {0};
+    netCanSendA(id, zero, dlc);
+  }
 }
-void setBit(uint8_t *d,int b){ if(b<64) d[b/8]|=(1<<(b%8)); }
 
-void canPulse(const uint8_t *active){
-  netCanSendA(TESLA_ID,active,8); delay(PULSE_MS); netCanSendA(TESLA_ID,BASE_FRAME,8);
-}
-
-void execAction(const char *id,bool sec){
-  Serial.printf("[ACT] %s sec=%d\n",id,sec);
-  if(strcmp(id,"trunk")==0)         { uint8_t f[8]; frameBase(f); writeField(f,54,2,1); canPulse(f); drawAction("COFFRE",sec?"FERMER":"OUVRIR",C_RED); return; }
-  if(strcmp(id,"frunk")==0)         { uint8_t f[8]; frameBase(f); setBit(f,5); canPulse(f); drawAction("FRUNK","OUVERT",C_ORANGE); return; }
-  if(strcmp(id,"horn")==0)          { uint8_t f[8]; frameBase(f); setBit(f,61); canPulse(f); drawAction("KLAXON","BEEP!",C_RED); return; }
-  if(strcmp(id,"lock")==0)          { uint8_t f[8]; frameBase(f); writeField(f,17,3,1); canPulse(f); drawAction("PORTES","LOCK",C_DARK); return; }
-  if(strcmp(id,"unlock")==0)        { uint8_t f[8]; frameBase(f); writeField(f,17,3,2); canPulse(f); drawAction("PORTES","UNLOCK",C_GREEN); return; }
-  if(strcmp(id,"mirror_fold")==0)   { uint8_t f[8]; frameBase(f); writeField(f,24,2,sec?2:1); canPulse(f); drawAction("RETROS",sec?"DEPLOYE":"REPLIE",C_TEAL); return; }
-  if(strcmp(id,"battery_heat")==0)  { if(sec){battHeatActive=false;uint8_t d[8]={0};netCanSendA(0x082,d,8);drawAction("BAT HEAT","STOP",C_DARK);}else{battHeatActive=true;lastHeatMs=0;drawAction("BAT HEAT","ON",C_ORANGE);} return; }
-  if(strcmp(id,"flash")==0)         { uint8_t d1[]={0x00,0x00,0xC8,0x38,0x84,0x0C,0x00,0x00}; uint8_t d0[]={0x00,0x00,0xC8,0x38,0x80,0x0C,0x00,0x00}; netCanSendA(0x3F5,d1,8); delay(200); netCanSendA(0x3F5,d0,8); drawAction("PHARES","FLASH",C_BLUE); return; }
-  if(strcmp(id,"precond_on")==0)    { if(sec){uint8_t d[]={0x0E,0x0E,0x00,0x00,0x00};netCanSendA(0x2F3,d,5);drawAction("HVAC","OFF",C_DARK);}else{uint8_t d[]={0x0E,0x0E,0x0B,0x08,0x00};netCanSendA(0x2F3,d,5);drawAction("HVAC","ON",C_PURPLE);} return; }
-  if(strcmp(id,"charge_port")==0)   { uint8_t d[]={sec?(uint8_t)0x02:(uint8_t)0x01,0x00,0x00,0x00}; netCanSendA(0x333,d,4); drawAction("PORT",sec?"FERME":"OUVERT",C_GREEN); return; }
+void execAction(const char *id, bool sec){
+  Serial.printf("[ACT] %s sec=%d\n", id, sec);
+  
+  if(strcmp(id,"trunk")==0)         { canPulse(TESLA_ID, TRUNK_FRAME, 8); drawAction("COFFRE", sec?"FERMER":"OUVRIR", C_RED); return; }
+  if(strcmp(id,"frunk")==0)         { canPulse(TESLA_ID, FRUNK_FRAME, 8); drawAction("FRUNK", "OUVERT", C_ORANGE); return; }
+  if(strcmp(id,"horn")==0)          { canPulse(TESLA_ID, HORN_FRAME, 8); drawAction("KLAXON", "BEEP!", C_RED); return; }
+  if(strcmp(id,"lock")==0)          { canPulse(TESLA_ID, LOCK_FRAME, 8); drawAction("PORTES", "LOCK", C_DARK); return; }
+  if(strcmp(id,"unlock")==0)        { canPulse(TESLA_ID, UNLOCK_FRAME, 8); drawAction("PORTES", "UNLOCK", C_GREEN); return; }
+  if(strcmp(id,"mirror_fold")==0)   { canPulse(TESLA_ID, sec ? MIRROR_UNFOLD_FRAME : MIRROR_FOLD_FRAME, 8); drawAction("RETROS", sec?"DEPLOYE":"REPLIE", C_TEAL); return; }
+  if(strcmp(id,"battery_heat")==0)  { if(sec){ battHeatActive=false; canPulse(0x082, BATTERY_HEAT, 8); drawAction("BAT HEAT","STOP",C_DARK); } else { battHeatActive=true; lastHeatMs=0; drawAction("BAT HEAT","ON",C_ORANGE); } return; }
+  if(strcmp(id,"flash")==0)         { canPulse(0x3F5, FLASH_ACTIVE, 8); drawAction("PHARES","FLASH",C_BLUE); return; }
+  if(strcmp(id,"precond_on")==0)    { canPulse(0x2F3, sec ? HVAC_OFF : HVAC_PRECOND, 5); drawAction("HVAC", sec?"OFF":"ON", sec?C_DARK:C_PURPLE); return; }
+  if(strcmp(id,"charge_port")==0)   { canPulse(0x333, sec ? CHARGE_CLOSE : CHARGE_OPEN, 4); drawAction("PORT", sec?"FERME":"OUVERT", C_GREEN); return; }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1133,64 +1145,110 @@ void drawDots(int cur, int total) {
     canvas.fillCircle(startX+i*10+4,214,3,(i==cur)?TFT_WHITE:0x4208);
 }
 
+// ── Dessiner une icône de slot en position angulaire ──────────
+// cx,cy = centre écran, angle = radians, slot index, actif ou non
+void drawSlotIcon(int slotIdx, float angle, bool active) {
+  const int CX = 120, CY = 120;
+  const int R_ICONS = 82;   // rayon du cercle d'icônes
+  const int R_BIG   = 28;   // rayon cercle icône active
+  const int R_SMALL = 20;   // rayon cercle icônes voisines
+
+  int ix = CX + (int)(R_ICONS * sinf(angle));
+  int iy = CY - (int)(R_ICONS * cosf(angle));
+
+  int idx = activeSlotIndex(slotIdx);
+  if(idx < 0) {
+    // Slot vide : petit cercle terne
+    canvas.fillCircle(ix, iy, active ? R_BIG : R_SMALL, 0x2104);
+    canvas.drawCircle(ix, iy, active ? R_BIG : R_SMALL, 0x4208);
+    return;
+  }
+  const Slot &s   = slots[idx];
+  const Action *a = findAction(s.actionId);
+  if(!a) return;
+
+  uint16_t bg = s.color ? s.color : a->colorBg;
+  int r = active ? R_BIG : R_SMALL;
+
+  if(active) {
+    // Icône active : grand cercle plein coloré
+    canvas.fillCircle(ix, iy, r, bg);
+    canvas.drawCircle(ix, iy, r+1, RING_COL);
+    canvas.setTextColor(TFT_WHITE, bg);
+    canvas.setTextSize(active ? 2 : 1);
+    canvas.setTextDatum(MC_DATUM);
+    canvas.drawString(a->icon, ix, iy);
+  } else {
+    // Icône voisine : petit cercle semi-transparent
+    canvas.fillCircle(ix, iy, r, 0x1082);
+    canvas.drawCircle(ix, iy, r, bg);
+    canvas.setTextColor(bg, 0x1082);
+    canvas.setTextSize(1);
+    canvas.setTextDatum(MC_DATUM);
+    canvas.drawString(a->icon, ix, iy);
+  }
+}
+
 void drawIdle() {
   canvas.fillScreen(TFT_BLACK);
 
   if(nSlots==0) {
+    canvas.drawCircle(120,120,100,RING_COL);
     canvas.setTextColor(0x4208,TFT_BLACK);
     canvas.setTextSize(2);
-    canvas.setTextDatum(MC_DATUM); canvas.drawString("Aucun slot", 120, 95);
+    canvas.setTextDatum(MC_DATUM); canvas.drawString("Aucun slot", 120, 108);
     canvas.setTextSize(1);
     canvas.setTextColor(0x3084,TFT_BLACK);
-    canvas.setTextDatum(MC_DATUM); canvas.drawString("Appui long = menu", 120, 130);
-    canvas.drawCircle(120,108,90,RING_COL);
-  } else {
-    int idx = activeSlotIndex(curSlot);
-    if(idx>=0) {
-      const Slot &s = slots[idx];
-      const Action *a = findAction(s.actionId);
-      if(a) {
-        uint16_t bg = s.color ? s.color : a->colorBg;
-        canvas.fillCircle(120,108,82,bg);
-        canvas.drawCircle(120,108,84,RING_COL);
-        canvas.drawCircle(120,108,85,RING_COL);
-        canvas.setTextColor(TFT_WHITE,bg);
-        canvas.setTextSize(3);
-        canvas.setTextDatum(MC_DATUM); canvas.drawString(a->icon, 120, 82);
-        canvas.setTextSize(2);
-        canvas.setTextDatum(MC_DATUM); canvas.drawString(a->label, 120, 128);
-        if(s.hasSec && a->labelSec[0]) {
-          canvas.setTextColor(0x8410,TFT_BLACK);
-          canvas.setTextSize(1);
-          String sec2="2x: "; sec2+=a->labelSec;
-          canvas.setTextDatum(MC_DATUM); canvas.drawString(sec2.c_str(), 120, 218);
-        }
-      }
-    } else {
-      canvas.setTextColor(0x4208,TFT_BLACK);
-      canvas.setTextSize(2);
-      canvas.setTextDatum(MC_DATUM); canvas.drawString("Aucun slot", 120, 95);
-    }
-    drawDots(curSlot, nSlots);
+    canvas.setTextDatum(MC_DATUM); canvas.drawString("appui long = menu", 120, 148);
+    canvas.pushSprite(0,0);
+    return;
   }
 
-  // Numéro slot
-  if(nSlots>0) {
-    char buf[12]; snprintf(buf,sizeof(buf),"%d/%d",curSlot+1,nSlots);
-    canvas.setTextColor(0x2104,TFT_BLACK);
-    canvas.setTextSize(1);
-    canvas.setTextDatum(MC_DATUM); canvas.drawString(buf, 120, 16);
+  // ── Cercle de connexion Major ─────────────────────────────
+  canvas.drawCircle(120,120,113,RING_COL);
+
+  // ── Icônes en cercle : actif + N voisins ──────────────────
+  // On affiche jusqu'à nSlots icônes réparties uniformément
+  // L'icône active est en haut (angle=0), les autres autour
+  int N = min(nSlots, 8);  // max 8 icônes affichées
+  float step = (2.0f * M_PI) / N;
+
+  for(int i = 0; i < N; i++) {
+    int slotNum = (curSlot + i) % nSlots;
+    float angle = i * step;
+    bool active = (i == 0);
+    drawSlotIcon(slotNum, angle, active);
+  }
+
+  // ── Centre : label + action courante ─────────────────────
+  int idx = activeSlotIndex(curSlot);
+  if(idx >= 0) {
+    const Slot &s   = slots[idx];
+    const Action *a = findAction(s.actionId);
+    if(a) {
+      canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+      canvas.setTextSize(2);
+      canvas.setTextDatum(MC_DATUM);
+      canvas.drawString(a->label, 120, 108);
+      if(s.hasSec && a->labelSec[0]) {
+        canvas.setTextColor(0x6B4D, TFT_BLACK);
+        canvas.setTextSize(1);
+        String sec2="2x: "; sec2+=a->labelSec;
+        canvas.setTextDatum(MC_DATUM);
+        canvas.drawString(sec2.c_str(), 120, 135);
+      }
+    }
   }
 
   canvas.pushSprite(0,0);
 }
 
 // ─── MENU APPUI LONG ─────────────────────────────────────────
-// 0=BRIGHT 1=CAN-A 2=CAN-B 3=REBOOT 4=EXIT
-#define MENU_COUNT 5
+// 0=BRIGHT 1=CAN-A 2=CAN-B 3=CONFIG 4=REBOOT 5=EXIT
+#define MENU_COUNT 6
 void drawLongMenu(uint8_t sel) {
-  const char* labels[] = {"BRIGHT","CAN-A","CAN-B","REBOOT","EXIT"};
-  uint16_t    colors[] = {0xFFE0, C_TEAL, C_TEAL, C_RED, 0x4208};
+  const char* labels[] = {"BRIGHT","CAN-A","CAN-B","CONFIG","REBOOT","EXIT"};
+  uint16_t    colors[] = {0xFFE0, C_TEAL, C_TEAL, C_GREEN, C_RED, 0x4208};
   canvas.fillScreen(TFT_BLACK);
   canvas.fillCircle(120,108,90,0x0C0E);
   canvas.drawCircle(120,108,92,DYAL_ORANGE);
@@ -1203,9 +1261,9 @@ void drawLongMenu(uint8_t sel) {
   canvas.setTextColor(0x3084,TFT_BLACK);
   canvas.setTextSize(1);
   canvas.setTextDatum(MC_DATUM); canvas.drawString("< tourner   clic = ok >", 120, 145);
-  // 6 points
+  // Points menu
   for(int i=0;i<MENU_COUNT;i++)
-    canvas.fillCircle(90+i*10,165,3,(i==sel)?DYAL_ORANGE:0x2104);
+    canvas.fillCircle(85+i*10,165,3,(i==sel)?DYAL_ORANGE:0x2104);
   canvas.pushSprite(0,0);
 }
 
@@ -1445,6 +1503,50 @@ void viewCanBus(char bus) {
   while(millis() < suppressUntil) delay(10);
 }
 
+
+// ── Toggle AP de configuration (DYAL3-M5) ────────────────────
+// Appelé depuis le menu CONFIG dans handleLongPress
+void toggleConfigAP() {
+  if(!configApActive) {
+    // Activer l'AP
+    WiFi.softAPConfig(
+      IPAddress(192,168,10,1),
+      IPAddress(192,168,10,1),
+      IPAddress(255,255,255,0));
+    WiFi.softAP(SECRET_AP_SSID,SECRET_AP_PASS,1,false,2);
+    setupRoutes();
+    server.begin();
+    configApActive = true;
+    Serial.println("[AP] DYAL3-M5 actif -> 192.168.10.1");
+    buzz(40); delay(60); buzz(40);
+    // Afficher IP
+    canvas.fillScreen(TFT_BLACK);
+    canvas.fillCircle(120,108,90,DYAL_BLUE);
+    canvas.drawCircle(120,108,92,DYAL_ORANGE);
+    canvas.setTextColor(TFT_WHITE,DYAL_BLUE);
+    canvas.setTextSize(1);
+    canvas.setTextDatum(MC_DATUM); canvas.drawString("CONFIG AP", 120, 72);
+    canvas.setTextColor(C_GREEN,DYAL_BLUE);
+    canvas.setTextSize(1);
+    canvas.setTextDatum(MC_DATUM); canvas.drawString(SECRET_AP_SSID, 120, 94);
+    canvas.setTextSize(2);
+    canvas.setTextDatum(MC_DATUM); canvas.drawString("192.168.10.1", 120, 116);
+    canvas.setTextColor(0x4208,DYAL_BLUE);
+    canvas.setTextSize(1);
+    canvas.setTextDatum(MC_DATUM); canvas.drawString("clic = desactiver", 120, 148);
+    canvas.pushSprite(0,0);
+    waitClick();
+    drawIdle();
+  } else {
+    // Désactiver l'AP
+    WiFi.softAPdisconnect(true);
+    configApActive = false;
+    Serial.println("[AP] DYAL3-M5 desactive");
+    buzz(80);
+    drawIdle();
+  }
+}
+
 void handleLongPress() {
   buzz(80);
   uiMode = UI_MENU;
@@ -1500,6 +1602,12 @@ void handleLongPress() {
       while(millis() < suppressUntil) delay(10);
 
     } else if(menuSel==3) {
+      // CONFIG : toggle AP DYAL3-M5
+      toggleConfigAP();
+      uiMode=UI_MENU; uiResetClickState();
+      while(millis()<suppressUntil) delay(10);
+
+    } else if(menuSel==4) {
       // REBOOT
       canvas.fillScreen(TFT_BLACK);
       canvas.fillCircle(120,108,88,C_RED);
@@ -1511,7 +1619,7 @@ void handleLongPress() {
       ESP.restart();
 
     } else {
-      // EXIT (menuSel==4) : SEUL moyen de sortir du menu
+      // EXIT (menuSel==5) : SEUL moyen de sortir du menu
       break;
     }
   }
@@ -1758,14 +1866,8 @@ void setup() {
   savedPASS=prefs.getString("pass","");
   prefs.end();
 
-  // AP interne pour accès page config (coexiste avec STA Major)
-  // WIFI_AP_STA déjà activé par netBegin()
-  WiFi.softAPConfig(
-    IPAddress(192,168,10,1),
-    IPAddress(192,168,10,1),
-    IPAddress(255,255,255,0));
-  WiFi.softAP(SECRET_AP_SSID,SECRET_AP_PASS,1,false,2);
-  Serial.println("[AP] DYAL3-M5 -> 192.168.10.1");
+  // AP DYAL3-M5 : PAS activé au démarrage
+  // Activé uniquement depuis le menu CONFIG (appui long → CONFIG)
 
   setupRoutes();
   server.begin();
