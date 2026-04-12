@@ -1,4 +1,6 @@
-  # DYÁL3 — Tesla CAN Controller via M5Stack DIAL
+# DYÁL3 — Tesla CAN Controller via M5Stack DIAL
+
+🇫🇷 Français — [🇬🇧 English version below](#english-version)
 
 Contrôleur de bus CAN pour Tesla Model Y, basé sur un **M5Stack DIAL** (molette rotative avec écran rond) connecté sans fil à un relais **ESP32-C3** branché directement sur le bus CAN du véhicule.
 
@@ -135,3 +137,147 @@ Testé sur **Tesla Model Y** (bus Vehicle/ETH, 500 kbps). Les identifiants CAN e
 Projet personnel, usage privé. Inspiré de la communauté Tesla hacking (opendbc, Commander).
 
 > ⚠️ L'utilisation de ce système sur le bus CAN d'un véhicule en circulation est de votre responsabilité. Certaines commandes peuvent affecter la conduite ou la sécurité.
+
+---
+
+---
+
+# English version
+
+🇬🇧 English — [🇫🇷 Version française en haut](#dyál3--tesla-can-controller-via-m5stack-dial)
+
+CAN bus controller for Tesla Model Y, based on an **M5Stack DIAL** (rotary knob with round screen) connected wirelessly to an **ESP32-C3** relay plugged directly into the vehicle's CAN bus.
+
+---
+
+## Overview
+
+DYÁL3 allows triggering actions on a Tesla Model Y (trunk, frunk, horn, lock/unlock, HVAC, battery heating, etc.) from a small rotary knob placed inside the cabin, with no cable between the controller and the vehicle.
+
+```
+Tesla CAN bus
+      │
+  ESP32-C3 "MAJOR"          Hidden WiFi (Dyal3-CAN)
+  SN65HVD230 × 2    ◄────────────────────────────►   M5Stack DIAL
+  Bus A (Vehicle)                                     Rotary knob + screen
+  Bus B (second)             HTTP / UDP push          User interface
+```
+
+---
+
+## Required Hardware
+
+| Component | Role |
+|-----------|------|
+| **M5Stack DIAL** | User interface (GC9A01 240×240 screen, encoder knob, FT3267 touch, buzzer) |
+| **ESP32-C3** | CAN relay — physically connected to the Tesla CAN bus |
+| **SN65HVD230 × 2** | 3.3V CAN transceivers (Bus A and Bus B) |
+| OBD cable / harness | Access to the vehicle's CAN bus |
+
+---
+
+## Features
+
+### Vehicle Control
+- **Rear trunk** (open / close)
+- **Frunk** (open)
+- **Horn**
+- **Lock / unlock** doors
+- **Mirrors** (fold / unfold)
+
+### M5Stack DIAL Interface
+- Navigation via **rotary knob** between configured actions
+- **Touchscreen** configurable: single tap, double tap, or disabled
+- **Status ring** green/red around each action (Major connection)
+- **2s long press**: access to secondary menu (BRIGHT, CAN-A, CAN-B, REBOOT, EXIT)
+- **Brightness adjustment** in real time from the knob
+- **CAN monitor** live Bus A and Bus B
+
+### Connectivity and Network
+- M5Stack connects automatically to Major at startup
+- Automatic reconnection after 2 consecutive failed pings (max 3s)
+- Internal AP `DYAL3-M5` for access to the configuration page
+- SETUP mode accessible via long press menu: displays local IP or activates a fallback AP
+
+### Web Configuration
+Accessible at `http://192.168.10.1/config` (or local IP if connected to home network):
+
+- **Main page**: Major status, brightness, touch mode, quick actions, system
+- **`/slots` page**: configure the 10 knob slots by drag & drop, color picker, secondary action (double-click)
+- **OTA**: wireless firmware update
+
+---
+
+## Software Architecture
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `dyal3.ino` | M5Stack DIAL firmware — UI, display, network, HTTP |
+| `dyal3_network.h` | Non-blocking network layer (FreeRTOS queue, async HTTP, UDP push) |
+| `dyal3_esp32c3.ino` | ESP32-C3 firmware — CAN relay, hidden WiFi AP, HTTP/UDP |
+| `secrets.h` | WiFi credentials and WPA2 keys (do not commit) |
+| `secrets.h.example` | Template to copy for creating `secrets.h` |
+
+### Communication Protocol
+
+**Send a CAN frame** (M5 → Major):
+```
+GET http://192.168.20.1/?bus=A&id=0x273&data=C1A00000C8023002
+```
+
+**Receive CAN frames** (Major → M5) via UDP push:
+```
+BUS_A:0x273:C1A00000C8023002\n
+```
+
+---
+
+## Installation
+
+### Prerequisites
+- Arduino IDE 1.8.x or 2.x
+- M5Stack ESP32 board package (via board manager)
+- ESP32C3 Dev Module board package
+- M5GFX library
+
+### Steps
+
+1. Clone the repository
+2. Copy `secrets.h.example` to `secrets.h` and fill in your values
+3. Flash `dyal3_esp32c3.ino` to the ESP32-C3 (USB CDC On Boot: Enabled)
+4. Flash `dyal3.ino` to the M5Stack DIAL
+5. Power the ESP32-C3 and connect it to the CAN bus
+6. Turn on the M5Stack — it connects automatically to Major
+
+### Default Network Settings
+
+| Parameter | Value |
+|-----------|-------|
+| Major SSID (hidden) | `Dyal3-CAN` |
+| Major IP | `192.168.20.1` |
+| M5 config AP | `DYAL3-M5` |
+| M5 config IP | `192.168.10.1` |
+| Config page | `http://192.168.10.1/config` |
+
+---
+
+## Security
+
+- Major AP is in hidden mode (SSID not broadcast) + WPA2
+- Access to the configuration page is restricted to active AP mode
+
+---
+
+## Compatibility
+
+Tested on **Tesla Model Y** (Vehicle/ETH bus, 500 kbps). CAN IDs and frames are sourced from the **opendbc** project and real captures. Some actions may vary depending on the manufacturing year and Tesla firmware version.
+
+---
+
+## License
+
+Personal project, private use. Inspired by the Tesla hacking community (opendbc, Commander).
+
+> ⚠️ Using this system on a vehicle's CAN bus while driving is your own responsibility. Some commands may affect driving or safety.
